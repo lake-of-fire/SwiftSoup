@@ -185,6 +185,7 @@ class HtmlTreeBuilder: TreeBuilder {
         }
     }
 
+    @inlinable
     @discardableResult
     func insert(_ startTag: Token.StartTag) throws -> Element {
         // handle empty unknown tags
