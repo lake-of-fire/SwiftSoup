@@ -21,7 +21,9 @@ internal final class Weak<T: AnyObject> {
 }
 
 open class Node: Equatable, Hashable {
+    @usableFromInline
     var baseUri: [UInt8]?
+    @usableFromInline
     var attributes: Attributes?
 
     @inline(__always)
@@ -193,9 +195,9 @@ open class Node: Equatable, Hashable {
             }
             return Node.empty
         }
-        let val: [UInt8] = try attributes.getIgnoreCase(key: attributeKey)
-        if !val.isEmpty {
-            return val
+        let valSlice = try attributes.getIgnoreCaseSlice(key: attributeKey)
+        if !valSlice.isEmpty {
+            return valSlice.toArray()
         } else if Node.hasAbsPrefix(attributeKey) {
             return try absUrl(attributeKey.substring(Node.abs.count))
         } else {

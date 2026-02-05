@@ -404,7 +404,7 @@ class HtmlTreeBuilder: TreeBuilder {
 
     
     func insert(_ commentToken: Token.Comment) throws {
-        let comment: Comment = Comment(slice: commentToken.getDataSlice(), baseUri)
+        let comment: Comment = Comment(slice: commentToken.takeDataSlice(), baseUri)
         if let range = commentToken.sourceRange {
             comment.setSourceRange(range, complete: true)
         }

@@ -131,9 +131,12 @@ public class DocumentType: Node {
     }
 
     private func has(_ attribute: [UInt8]) -> Bool {
+        guard let attributes else { return false }
         do {
-            return !StringUtil.isBlank(try String(decoding: attr(attribute), as: UTF8.self))
-        } catch {return false}
+            return !(try attributes.getIgnoreCaseSlice(key: attribute).trim().isEmpty)
+        } catch {
+            return false
+        }
     }
 
 	public override func copy(with zone: NSZone? = nil) -> Any {
