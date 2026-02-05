@@ -1124,7 +1124,9 @@ open class Attributes: NSCopying {
         var result: [String: String] = [:]
         result.reserveCapacity(attributes.count)
         for attr in attributes where attr.isDataAttribute() {
-            result[attr.getKey().substring(prefixLength)] = attr.getValue()
+            let key = attr.getKey().substring(prefixLength)
+            let value = String(decoding: attr.valueSliceMaterialized(), as: UTF8.self)
+            result[key] = value
         }
         return result
     }

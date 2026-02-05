@@ -2474,30 +2474,21 @@ open class Element: Node {
      - returns: set of classnames, empty if no class attribute
      */
     public func classNames() throws -> OrderedSet<String> {
-        let utf8ClassName = try classNameUTF8()
+        guard let attributes else { return OrderedSet<String>() }
+        let utf8ClassName = try attributes.getIgnoreCaseSlice(key: Element.classString)
         let classNames = OrderedSet<String>()
-        var currentStartIndex: Int? = nil
-        
-        for (i, byte) in utf8ClassName.enumerated() {
-            if byte.isWhitespace {
-                if let start = currentStartIndex {
-                    let classBytes = utf8ClassName[start..<i]
-                    if !classBytes.isEmpty {
-                        classNames.append(String(decoding: classBytes, as: UTF8.self))
-                    }
-                    currentStartIndex = nil
-                }
-            } else {
-                if currentStartIndex == nil {
-                    currentStartIndex = i
-                }
+        let len = utf8ClassName.count
+        var i = 0
+        while i < len {
+            while i < len && utf8ClassName[i].isWhitespace {
+                i += 1
             }
-        }
-        
-        if let start = currentStartIndex {
-            let classBytes = utf8ClassName[start..<utf8ClassName.count]
-            if !classBytes.isEmpty {
-                classNames.append(String(decoding: classBytes, as: UTF8.self))
+            let start = i
+            while i < len && !utf8ClassName[i].isWhitespace {
+                i += 1
+            }
+            if start < i {
+                classNames.append(String(decoding: utf8ClassName[start..<i], as: UTF8.self))
             }
         }
         

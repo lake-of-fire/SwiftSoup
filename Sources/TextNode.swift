@@ -143,7 +143,10 @@ open class TextNode: Node {
                     try attrs.put(TextNode.TEXT_KEY, _text)
                 } catch {}
             }
-            return attrs.get(key: TextNode.TEXT_KEY)
+            if let slice = attrs.valueSliceCaseSensitive(TextNode.TEXT_KEY) {
+                return slice.toArray()
+            }
+            return []
         }
         materializeTextIfNeeded()
         return _text

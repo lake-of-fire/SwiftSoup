@@ -92,7 +92,10 @@ open class DataNode: Node {
         guard let attributes = attributes else {
             return []
         }
-        return attributes.get(key: DataNode.DATA_KEY)
+        if let slice = attributes.valueSliceCaseSensitive(DataNode.DATA_KEY) {
+            return slice.toArray()
+        }
+        return []
     }
 
     @usableFromInline
