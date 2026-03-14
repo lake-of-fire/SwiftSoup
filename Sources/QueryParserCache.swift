@@ -54,7 +54,7 @@ public extension QueryParser {
     /// Default ``QueryParser`` caching implementation.
     ///
     /// On (Apple) platforms that support it, this cache responds to memory pressure.
-    final class DefaultCache: QueryParserCache {
+    final class DefaultCache: QueryParserCache, @unchecked Sendable {
         // The value is arbitrarily chosen. Maybe use a low limit on watchOS?
         private static let defaultCountLimit = 300
         

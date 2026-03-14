@@ -10,7 +10,7 @@ let package = Package(
         .executable(name: "SwiftSoupProfile", targets: ["SwiftSoupProfile"])
     ],
     dependencies: [
-        .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
+        .package(url: "https://github.com/lake-of-fire/LRUCache.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.3.0"),
     ],
     targets: [
