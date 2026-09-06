@@ -1,0 +1,67 @@
+[tasks."bench:build"]
+description = "Build the release benchmark executable"
+run = "swift build -c release --product SwiftSoupProfile"
+
+[tasks."bench:parse"]
+description = "Benchmark the Manabi-style parse-only workload"
+depends = ["bench:build"]
+run = '''
+set -eu
+bin=.build/release/SwiftSoupProfile
+iters=${SWIFTSOUP_BENCH_ITERS:-20}
+repeat=${SWIFTSOUP_BENCH_REPEAT:-3}
+if command -v taskset >/dev/null 2>&1; then
+  exec taskset -c "${SWIFTSOUP_BENCH_CPU:-0}" "$bin" --workload manabiReaderParseOnly --iterations "$iters" --repeat "$repeat"
+fi
+exec "$bin" --workload manabiReaderParseOnly --iterations "$iters" --repeat "$repeat"
+'''
+
+[tasks."bench:reader"]
+description = "Benchmark the Manabi-style parse/mutate/serialize pipeline"
+depends = ["bench:build"]
+run = '''
+set -eu
+bin=.build/release/SwiftSoupProfile
+iters=${SWIFTSOUP_BENCH_ITERS:-10}
+repeat=${SWIFTSOUP_BENCH_REPEAT:-3}
+if command -v taskset >/dev/null 2>&1; then
+  exec taskset -c "${SWIFTSOUP_BENCH_CPU:-0}" "$bin" --workload manabiReaderPipeline --iterations "$iters" --repeat "$repeat"
+fi
+exec "$bin" --workload manabiReaderPipeline --iterations "$iters" --repeat "$repeat"
+'''
+
+[tasks."bench:attrs"]
+description = "Benchmark attribute-heavy parsing without selector work"
+depends = ["bench:build"]
+run = '''
+set -eu
+bin=.build/release/SwiftSoupProfile
+iters=${SWIFTSOUP_BENCH_ITERS:-2000}
+repeat=${SWIFTSOUP_BENCH_REPEAT:-3}
+if command -v taskset >/dev/null 2>&1; then
+  exec taskset -c "${SWIFTSOUP_BENCH_CPU:-0}" "$bin" --workload attributeParseNoSelect --iterations "$iters" --repeat "$repeat"
+fi
+exec "$bin" --workload attributeParseNoSelect --iterations "$iters" --repeat "$repeat"
+'''
+
+[tasks."bench:serialize"]
+description = "Benchmark large no-pretty-print serialization"
+depends = ["bench:build"]
+run = '''
+set -eu
+bin=.build/release/SwiftSoupProfile
+iters=${SWIFTSOUP_BENCH_ITERS:-100}
+repeat=${SWIFTSOUP_BENCH_REPEAT:-3}
+if command -v taskset >/dev/null 2>&1; then
+  exec taskset -c "${SWIFTSOUP_BENCH_CPU:-0}" "$bin" --workload manabiOuterHtmlLargeNoPretty --iterations "$iters" --repeat "$repeat"
+fi
+exec "$bin" --workload manabiOuterHtmlLargeNoPretty --iterations "$iters" --repeat "$repeat"
+'''
+
+[tasks."test:source-reuse"]
+description = "Run source-backed serialization regression tests"
+run = "swift test --filter SourceReuseSerializationTest"
+
+[tasks."test:all"]
+description = "Run the full SwiftSoup test suite"
+run = "swift test"
