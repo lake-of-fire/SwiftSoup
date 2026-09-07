@@ -3359,7 +3359,7 @@ internal extension Element {
                         DebugTrace.log("rebuildQueryIndexesCombined: attr key \(String(decoding: attr.getKeyUTF8(), as: UTF8.self))")
                         let keySlice = attr.keySlice
                         let key = lowerKeys ? attr.lowerKeySlice() : keySlice
-                        if lowerKeys, !seenKeys.insert(key).inserted { continue }
+                        if !seenKeys.insert(key).inserted { continue }
                         if needsAttributes {
                             attributeIndex[key, default: []].append(Weak(element))
                         }
@@ -3580,7 +3580,7 @@ internal extension Element {
                 for attr in attrs.attributes {
                     let keySlice = attr.keySlice
                     let key = lowerKeys ? attr.lowerKeySlice() : keySlice
-                    if lowerKeys, !seenKeys.insert(key).inserted { continue }
+                    if !seenKeys.insert(key).inserted { continue }
                     newIndex[key, default: []].append(Weak(element))
                 }
             }
@@ -3623,7 +3623,7 @@ internal extension Element {
                 for attr in attrs.attributes {
                     let keySlice = attr.keySlice
                     let key = lowerKeys ? attr.lowerKeySlice() : keySlice
-                    if lowerKeys, !seenKeys.insert(key).inserted { continue }
+                    if !seenKeys.insert(key).inserted { continue }
                     guard Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false) else { continue }
                     let value = attr.lowerTrimmedValueSlice()
                     newIndex[key, default: [:]][value, default: []].append(Weak(element))

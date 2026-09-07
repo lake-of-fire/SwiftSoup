@@ -32,9 +32,7 @@ open class Node: Equatable, Hashable {
             return attributes
         }
         let created = Attributes()
-        if let element = self as? Element {
-            created.ownerElement = element
-        }
+        created.ownerNode = self
         attributes = created
         return created
     }
@@ -119,6 +117,7 @@ open class Node: Equatable, Hashable {
         }
         self.baseUri = baseUri.trim()
         self.attributes = attributes
+        self.attributes?.ownerNode = self
     }
 
     public init(
@@ -132,6 +131,7 @@ open class Node: Equatable, Hashable {
         }
         self.baseUri = baseUri.trim()
         self.attributes = attributes
+        self.attributes?.ownerNode = self
     }
     
     public init(
@@ -1249,7 +1249,7 @@ open class Node: Equatable, Hashable {
             } else {
                 clone.attributes = attrs.clone()
             }
-            clone.attributes?.ownerElement = clone as? SwiftSoup.Element
+            clone.attributes?.ownerNode = clone
         } else {
             clone.attributes = nil
         }

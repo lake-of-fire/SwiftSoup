@@ -39,7 +39,7 @@ open class Attributes: NSCopying {
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
         ownerElement?.markAttributeQueryIndexesDirty()
-        ownerElement?.markSourceDirty()
+        markOwnerContentDirty()
     }
 
     @usableFromInline
@@ -78,7 +78,7 @@ open class Attributes: NSCopying {
         @inline(__always)
         didSet {
             ownerElement?.markAttributeQueryIndexesDirty()
-            ownerElement?.markSourceDirty()
+            markOwnerContentDirty()
             invalidateLowercasedKeysCache()
             invalidateKeyIndex()
         }
@@ -111,7 +111,23 @@ open class Attributes: NSCopying {
     
     // TODO: Delegate would be cleaner...
     @usableFromInline
-    weak var ownerElement: SwiftSoup.Element?
+    weak var ownerNode: Node?
+
+    @usableFromInline
+    var ownerElement: SwiftSoup.Element? {
+        get { ownerNode as? SwiftSoup.Element }
+        set { ownerNode = newValue }
+    }
+
+    @usableFromInline
+    internal func markOwnerContentDirty() {
+        ownerNode?.markSourceDirty()
+        // Leaf attributes hold text, data, comments, and declarations rather
+        // than element metadata. Their edits can change text/data selectors.
+        if let ownerNode, !(ownerNode is SwiftSoup.Element) {
+            ownerNode.bumpTextMutationVersion()
+        }
+    }
     
     public init() {
         attributes.reserveCapacity(16)
@@ -186,7 +202,7 @@ open class Attributes: NSCopying {
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
         ownerElement?.markAttributeQueryIndexesDirty()
-        ownerElement?.markSourceDirty()
+        markOwnerContentDirty()
     }
 
     @usableFromInline
@@ -337,7 +353,7 @@ open class Attributes: NSCopying {
             var rebuilt: [ByteSlice: Int] = [:]
             rebuilt.reserveCapacity(attributes.count)
             for (index, attr) in attributes.enumerated() {
-                rebuilt[attr.keySlice] = index
+                if rebuilt[attr.keySlice] == nil { rebuilt[attr.keySlice] = index }
             }
             keyIndex = rebuilt
             keyIndexDirty = false
@@ -729,14 +745,14 @@ open class Attributes: NSCopying {
                 ownerElement?.markIdQueryIndexDirty()
             }
             ownerElement?.markAttributeValueQueryIndexDirty(for: key)
-            ownerElement?.markSourceDirty()
+            markOwnerContentDirty()
             return
         }
         let keySlice = ByteSlice.fromArray(key).trim()
         // Drop a malformed key rather than trapping; jsoup does the same. See #392.
         guard let attribute = try? Attribute(keySlice: keySlice, valueSlice: slice) else { return }
         putMaterialized(attribute)
-        ownerElement?.markSourceDirty()
+        markOwnerContentDirty()
     }
 
     
@@ -1270,7 +1286,7 @@ open class Attributes: NSCopying {
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
         ownerElement?.markAttributeQueryIndexesDirty()
-        ownerElement?.markSourceDirty()
+        markOwnerContentDirty()
     }
     
     @inline(__always)

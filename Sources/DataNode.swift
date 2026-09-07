@@ -46,7 +46,7 @@ open class DataNode: Node {
     open override func nodeNameUTF8() -> [UInt8] {
         return nodeName().utf8Array
     }
-    
+
     @inline(__always)
     open override func nodeName() -> String {
         return "#data"
@@ -60,7 +60,7 @@ open class DataNode: Node {
     open func getWholeData() -> String {
         return String(decoding: getWholeDataUTF8(), as: UTF8.self)
     }
-    
+
     @inline(__always)
     private func materializeRawDataIfNeeded() -> [UInt8]? {
         if let slices = rawDataSlices {
@@ -85,7 +85,12 @@ open class DataNode: Node {
     open func getWholeDataUTF8() -> [UInt8] {
         if let materialized = materializeRawDataIfNeeded() {
             do {
-                try ensureAttributesForWrite().put(DataNode.DATA_KEY, materialized)
+                let attrs = ensureAttributesForWrite()
+                // Materializing an unchanged source slice is a read.
+                let owner = attrs.ownerNode
+                attrs.ownerNode = nil
+                defer { attrs.ownerNode = owner }
+                try attrs.put(DataNode.DATA_KEY, materialized)
             } catch {}
             return materialized
         }
@@ -200,6 +205,66 @@ open class DataNode: Node {
 
     @inline(__always)
     override func outerHtmlTail(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) {}
+
+    private func ensureDataAttributes() {
+        _ = getWholeDataUTF8()
+        _ = ensureAttributesForWrite()
+    }
+
+    open override func attr(_ attributeKey: [UInt8]) throws -> [UInt8] {
+        ensureDataAttributes()
+        return try super.attr(attributeKey)
+    }
+
+    open override func attr(_ attributeKey: String) throws -> String {
+        ensureDataAttributes()
+        return try super.attr(attributeKey)
+    }
+
+    open override func getAttributes() -> Attributes {
+        ensureDataAttributes()
+        return super.getAttributes()!
+    }
+
+    open override func attr(_ attributeKey: [UInt8], _ attributeValue: [UInt8]) throws -> Node {
+        ensureDataAttributes()
+        return try super.attr(attributeKey, attributeValue)
+    }
+
+    open override func attr(_ attributeKey: String, _ attributeValue: String) throws -> Node {
+        ensureDataAttributes()
+        return try super.attr(attributeKey, attributeValue)
+    }
+
+    open override func hasAttr(_ attributeKey: [UInt8]) -> Bool {
+        ensureDataAttributes()
+        return super.hasAttr(attributeKey)
+    }
+
+    open override func hasAttr(_ attributeKey: String) -> Bool {
+        ensureDataAttributes()
+        return super.hasAttr(attributeKey)
+    }
+
+    open override func removeAttr(_ attributeKey: [UInt8]) throws -> Node {
+        ensureDataAttributes()
+        return try super.removeAttr(attributeKey)
+    }
+
+    open override func removeAttr(_ attributeKey: String) throws -> Node {
+        ensureDataAttributes()
+        return try super.removeAttr(attributeKey)
+    }
+
+    open override func absUrl(_ attributeKey: String) throws -> String {
+        ensureDataAttributes()
+        return try super.absUrl(attributeKey)
+    }
+
+    open override func absUrl<T: Collection>(_ attributeKey: T) throws -> [UInt8] where T.Element == UInt8 {
+        ensureDataAttributes()
+        return try super.absUrl(attributeKey)
+    }
 
     /**
      Create a new DataNode from HTML encoded data.

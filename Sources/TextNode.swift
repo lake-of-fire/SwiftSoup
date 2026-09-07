@@ -385,12 +385,10 @@ open class TextNode: Node {
         if (attributes == nil) {
             attributes = Attributes()
             do {
-                if let slice = _textSlice {
-                    _text = Array(slice)
-                    _textSlice = nil
-                }
+                materializeTextIfNeeded()
                 try attributes?.put(TextNode.TEXT_KEY, _text)
             } catch {}
+            attributes?.ownerNode = self
         }
     }
 
@@ -417,6 +415,11 @@ open class TextNode: Node {
     open override func attr(_ attributeKey: String, _ attributeValue: String) throws -> Node {
         ensureAttributes()
         return try super.attr(attributeKey, attributeValue)
+    }
+
+    open override func hasAttr(_ attributeKey: [UInt8]) -> Bool {
+        ensureAttributes()
+        return super.hasAttr(attributeKey)
     }
 
     open override func hasAttr(_ attributeKey: String) -> Bool {
