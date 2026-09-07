@@ -44,6 +44,34 @@ fi
 exec "$bin" --workload attributeParseNoSelect --iterations "$iters" --repeat "$repeat"
 '''
 
+[tasks."bench:select"]
+description = "Benchmark large Manabi-style selector workloads"
+depends = ["bench:build"]
+run = '''
+set -eu
+bin=.build/release/SwiftSoupProfile
+iters=${SWIFTSOUP_BENCH_ITERS:-100}
+repeat=${SWIFTSOUP_BENCH_REPEAT:-3}
+if command -v taskset >/dev/null 2>&1; then
+  exec taskset -c "${SWIFTSOUP_BENCH_CPU:-0}" "$bin" --workload manabiSelectLarge --iterations "$iters" --repeat "$repeat"
+fi
+exec "$bin" --workload manabiSelectLarge --iterations "$iters" --repeat "$repeat"
+'''
+
+[tasks."bench:selector-cache"]
+description = "Benchmark repeated selector-cache-heavy queries"
+depends = ["bench:build"]
+run = '''
+set -eu
+bin=.build/release/SwiftSoupProfile
+iters=${SWIFTSOUP_BENCH_ITERS:-1000}
+repeat=${SWIFTSOUP_BENCH_REPEAT:-3}
+if command -v taskset >/dev/null 2>&1; then
+  exec taskset -c "${SWIFTSOUP_BENCH_CPU:-0}" "$bin" --workload selectorCacheHeavy --iterations "$iters" --repeat "$repeat"
+fi
+exec "$bin" --workload selectorCacheHeavy --iterations "$iters" --repeat "$repeat"
+'''
+
 [tasks."bench:serialize"]
 description = "Benchmark large no-pretty-print serialization"
 depends = ["bench:build"]
