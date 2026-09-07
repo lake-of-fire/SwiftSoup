@@ -32,6 +32,22 @@ open class Attributes: NSCopying {
     public static let dataPrefix: [UInt8] = "data-".utf8Array
 
     @usableFromInline
+    internal func attributeDidMutate(_ attribute: Attribute) {
+        // A retained view may outlive removal or replacement in this set.
+        guard attributes.contains(where: { $0 === attribute }) else { return }
+        hasUppercaseKeys = hasUppercaseKeys || Attributes.containsAsciiUppercase(attribute.keySlice)
+        invalidateLowercasedKeysCache()
+        invalidateKeyIndex()
+        ownerElement?.markAttributeQueryIndexesDirty()
+        ownerElement?.markSourceDirty()
+    }
+
+    @usableFromInline
+    internal func registerExposedAttributes() {
+        for attribute in attributes { attribute.registerMutationOwner(self) }
+    }
+
+    @usableFromInline
     internal enum PendingAttrValue {
         case none
         case empty
@@ -506,6 +522,7 @@ open class Attributes: NSCopying {
     @inline(__always)
     open func put(attribute: Attribute) {
         ensureMaterialized()
+        attribute.registerMutationOwner(self)
         putMaterialized(attribute)
     }
     
@@ -652,6 +669,7 @@ open class Attributes: NSCopying {
         let originalCount = attributes.count
         for readIndex in 0..<originalCount {
             let attr = attributes[readIndex]
+            attr.registerMutationOwner(self)
             let decision = body(attr)
             if let newValue = decision.newValue {
                 _ = attr.setValue(value: newValue)
@@ -1061,19 +1079,21 @@ open class Attributes: NSCopying {
         ensureMaterialized()
         guard let incoming = incoming else { return }
         incoming.ensureMaterialized()
+        incoming.registerExposedAttributes()
         for attr in incoming.attributes {
             put(attribute: attr)
         }
     }
     
     /**
-     Get the attributes as a List, for iteration. Do not modify the keys of the attributes via this view, as changes
-     to keys will not be recognised in the containing set.
+     Get the attributes as a List, for iteration. Values may be changed through this live view.
+     Use remove/put to rename keys without introducing duplicate keys in the containing set.
      - returns: an view of the attributes as a List.
      */
     @inline(__always)
     open func asList() -> [Attribute] {
         ensureMaterialized()
+        registerExposedAttributes()
         return attributes
     }
     
@@ -1244,6 +1264,7 @@ open class Attributes: NSCopying {
             attributes[ix].keySlice = lowered
             attributes[ix].keyBytes = nil
             attributes[ix].lowerKeySliceCache = lowered
+            attributes[ix].notifyMutationOwners()
         }
         hasUppercaseKeys = false
         invalidateLowercasedKeysCache()
@@ -1256,7 +1277,15 @@ open class Attributes: NSCopying {
     public func copy(with zone: NSZone? = nil) -> Any {
         ensureMaterialized()
         let clone = Attributes()
-        clone.attributes = attributes
+        clone.attributes = attributes.map { attribute in
+            let copied = attribute.clone()
+            // Preserve pre-existing custom-subclass behavior unless the subclass
+            // supplies a clone of its own type. Built-in attributes clone deeply.
+            if type(of: copied) == type(of: attribute) { return copied }
+            attribute.registerMutationOwner(self)
+            attribute.registerMutationOwner(clone)
+            return attribute
+        }
         clone.hasUppercaseKeys = hasUppercaseKeys
         clone.lowercasedKeysCache = nil
         clone.lowercasedKeyIndex = nil
@@ -1300,6 +1329,7 @@ open class Attributes: NSCopying {
 extension Attributes: Sequence {
     public func makeIterator() -> AnyIterator<Attribute> {
         ensureMaterialized()
+        registerExposedAttributes()
         return AnyIterator(attributes.makeIterator())
     }
 }

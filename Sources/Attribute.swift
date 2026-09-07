@@ -36,6 +36,46 @@ open class Attribute {
     @usableFromInline
     var lowerTrimmedValueSliceCache: ByteSlice? = nil
     
+    // Registered only when a mutable attribute escapes its containing set.
+    // Weak ownership supports attributes explicitly shared by multiple sets.
+    @usableFromInline
+    internal var mutationOwners: [Weak<Attributes>] = []
+
+    @usableFromInline
+    internal func registerMutationOwner(_ owner: Attributes) {
+        mutationOwners.removeAll { $0.value == nil }
+        if !mutationOwners.contains(where: { $0.value === owner }) {
+            mutationOwners.append(Weak(owner))
+        }
+    }
+
+    @usableFromInline
+    internal func notifyMutationOwners() {
+        for owner in mutationOwners {
+            owner.value?.attributeDidMutate(self)
+        }
+    }
+
+    /// Copies attribute storage without sharing mutable attribute state.
+    /// Subclasses with additional state should override clone().
+    public init(copying other: Attribute) {
+        keySlice = other.keySlice
+        valueSlice = other.valueSlice
+        valueSlices = other.valueSlices
+        valueSlicesCount = other.valueSlicesCount
+        keyBytes = other.keyBytes
+        valueBytes = other.valueBytes
+        lowerKeySliceCache = other.lowerKeySliceCache
+        lowerValueSliceCache = other.lowerValueSliceCache
+        lowerTrimmedValueSliceCache = other.lowerTrimmedValueSliceCache
+    }
+
+    /// Returns an independent attribute. Subclasses should preserve their type
+    /// and additional state by overriding this method.
+    open func clone() -> Attribute {
+        Attribute(copying: self)
+    }
+
     public init(key: [UInt8], value: [UInt8]) throws {
         try Validate.notEmpty(string: key)
         let trimmedKey = ByteSlice.fromArray(key).trim()
@@ -89,6 +129,7 @@ open class Attribute {
         keySlice = ByteSlice.fromArray(key).trim()
         keyBytes = nil
         lowerKeySliceCache = nil
+        notifyMutationOwners()
     }
     
     @inline(__always)
@@ -141,6 +182,7 @@ open class Attribute {
         valueBytes = nil
         lowerValueSliceCache = nil
         lowerTrimmedValueSliceCache = nil
+        notifyMutationOwners()
         return old
     }
     
@@ -406,17 +448,7 @@ open class Attribute {
         return result
     }
     
-    @inline(__always)
-    public func clone() -> Attribute {
-        do {
-            return try Attribute(key: getKeyUTF8(), value: getValueUTF8())
-        } catch Exception.Error( _, let  msg) {
-            print(msg)
-        } catch {
-            
-        }
-        return try! Attribute(key: [], value: [])
-    }
+
 
 }
 

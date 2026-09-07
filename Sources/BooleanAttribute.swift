@@ -29,6 +29,14 @@ open class BooleanAttribute: Attribute {
         try self.init(key: Array(keySlice))
     }
 
+    public override init(copying other: Attribute) {
+        super.init(copying: other)
+    }
+
+    public override func clone() -> Attribute {
+        BooleanAttribute(copying: self)
+    }
+
     override public func isBooleanAttribute() -> Bool {
         return true
     }
