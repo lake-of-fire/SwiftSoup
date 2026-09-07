@@ -29,7 +29,7 @@ final class SelectorResultCache {
     @usableFromInline
     final class Storage<Value> {
         let capacity: Int
-        private var nodes: [String: LRUNode<Value>] = [:]
+        private var nodes: [[UInt8]: LRUNode<Value>] = [:]
         private var head: LRUNode<Value>?
         private var tail: LRUNode<Value>?
 
@@ -43,25 +43,25 @@ final class SelectorResultCache {
 
         @inline(__always)
         func contains(_ key: String) -> Bool {
-            return nodes[key] != nil
+            return nodes[Array(key.utf8)] != nil
         }
 
         @inline(__always)
         func get(_ key: String) -> Value? {
-            guard let node = nodes[key] else { return nil }
+            guard let node = nodes[Array(key.utf8)] else { return nil }
             moveToHead(node)
             return node.value
         }
 
         @inline(__always)
         func set(_ key: String, _ value: Value) -> LRUNode<Value>? {
-            if let node = nodes[key] {
+            if let node = nodes[Array(key.utf8)] {
                 node.value = value
                 moveToHead(node)
                 return nil
             }
             let node = LRUNode(key: key, value: value)
-            nodes[key] = node
+            nodes[Array(key.utf8)] = node
             insertAtHead(node)
             if nodes.count > capacity {
                 return popTail()
@@ -71,7 +71,7 @@ final class SelectorResultCache {
 
         @inline(__always)
         func remove(_ key: String) -> Value? {
-            guard let node = nodes.removeValue(forKey: key) else { return nil }
+            guard let node = nodes.removeValue(forKey: Array(key.utf8)) else { return nil }
             removeNode(node)
             return node.value
         }
@@ -80,7 +80,7 @@ final class SelectorResultCache {
         func popTail() -> LRUNode<Value>? {
             guard let tail else { return nil }
             removeNode(tail)
-            nodes.removeValue(forKey: tail.key)
+            nodes.removeValue(forKey: Array(tail.key.utf8))
             return tail
         }
 
@@ -161,8 +161,8 @@ final class SelectorResultCache {
     @usableFromInline
     let protected: Storage<Result>
     private let doorkeeperCapacity: Int
-    private var doorkeeper: Set<String> = []
-    private var doorkeeperOrder: [String] = []
+    private var doorkeeper: Set<[UInt8]> = []
+    private var doorkeeperOrder: [[UInt8]] = []
 
     init(capacity: Int) {
         let protectedCap = max(1, (capacity * 3) / 4)
@@ -190,6 +190,7 @@ final class SelectorResultCache {
 
     @inline(__always)
     func put(_ key: String, _ value: Result) {
+        let cacheKey = Array(key.utf8)
         if protected.contains(key) {
             _ = protected.set(key, value)
             return
@@ -198,16 +199,16 @@ final class SelectorResultCache {
             _ = probationary.set(key, value)
             return
         }
-        if doorkeeper.contains(key) {
-            doorkeeper.remove(key)
-            if let idx = doorkeeperOrder.firstIndex(of: key) {
+        if doorkeeper.contains(cacheKey) {
+            doorkeeper.remove(cacheKey)
+            if let idx = doorkeeperOrder.firstIndex(of: cacheKey) {
                 doorkeeperOrder.remove(at: idx)
             }
             _ = probationary.set(key, value)
             return
         }
-        doorkeeper.insert(key)
-        doorkeeperOrder.append(key)
+        doorkeeper.insert(cacheKey)
+        doorkeeperOrder.append(cacheKey)
         if doorkeeperOrder.count > doorkeeperCapacity {
             let removed = doorkeeperOrder.removeFirst()
             doorkeeper.remove(removed)
@@ -1065,6 +1066,9 @@ open class Element: Node {
     @inline(__always)
     public func empty() -> Element {
         markQueryIndexesDirty()
+        for child in childNodes {
+            child.parentNode = nil
+        }
         childNodes.removeAll()
         bumpTextMutationVersion()
         markSourceDirty()
@@ -1457,6 +1461,10 @@ open class Element: Node {
         let key = needsTrim ? normalizedKey.trim() : normalizedKey
         if key.isEmpty {
             return Elements()
+        }
+        if Element.isAbsAttributeKey(key) {
+            // abs:href is a computed attribute, not a stored index key.
+            return Elements((try? getAllElements().array().filter { $0.hasAttr(key) }) ?? [])
         }
         if isAttributeQueryIndexDirty || normalizedAttributeNameIndex == nil {
             rebuildQueryIndexesForAllAttributes()

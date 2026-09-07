@@ -111,7 +111,21 @@ open class Attributes: NSCopying {
     
     // TODO: Delegate would be cleaner...
     @usableFromInline
-    weak var ownerNode: Node?
+    weak var ownerNode: Node? {
+        didSet {
+            additionalOwnerNodes.removeAll { $0.value == nil || $0.value === ownerNode }
+            if let oldValue, oldValue !== ownerNode,
+               !additionalOwnerNodes.contains(where: { $0.value === oldValue }) {
+                additionalOwnerNodes.append(Weak(oldValue))
+            }
+        }
+    }
+
+    @usableFromInline
+    internal var additionalOwnerNodes: [Weak<Node>] = []
+
+    @usableFromInline
+    internal var suppressContentNotifications = false
 
     @usableFromInline
     var ownerElement: SwiftSoup.Element? {
@@ -121,11 +135,19 @@ open class Attributes: NSCopying {
 
     @usableFromInline
     internal func markOwnerContentDirty() {
-        ownerNode?.markSourceDirty()
-        // Leaf attributes hold text, data, comments, and declarations rather
-        // than element metadata. Their edits can change text/data selectors.
-        if let ownerNode, !(ownerNode is SwiftSoup.Element) {
-            ownerNode.bumpTextMutationVersion()
+        guard !suppressContentNotifications else { return }
+        func notify(_ node: Node, shared: Bool) {
+            guard node.attributes === self else { return }
+            node.markSourceDirty()
+            if let element = node as? SwiftSoup.Element {
+                if shared { element.markAttributeQueryIndexesDirty() }
+            } else {
+                node.bumpTextMutationVersion()
+            }
+        }
+        if let ownerNode { notify(ownerNode, shared: false) }
+        for owner in additionalOwnerNodes {
+            if let node = owner.value { notify(node, shared: true) }
         }
     }
     

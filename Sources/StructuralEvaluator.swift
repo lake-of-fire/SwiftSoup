@@ -40,7 +40,7 @@ public class StructuralEvaluator: Evaluator, @unchecked Sendable {
             }
             while let current = stack.popLast() {
                 do {
-                    if try evaluator.matches(root, current) {
+                    if try evaluator.matches(element, current) {
                         return true
                     }
                 } catch {}
@@ -89,9 +89,9 @@ public class StructuralEvaluator: Evaluator, @unchecked Sendable {
             }
 
             var parent = element.parent()
-            while (true) {
+            while let p = parent {
                 do {
-                    if let p = parent, try evaluator.matches(root, p) {
+                    if try evaluator.matches(root, p) {
                         return true
                     }
                 } catch {}

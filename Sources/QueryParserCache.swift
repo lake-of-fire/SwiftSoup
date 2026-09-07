@@ -12,7 +12,8 @@ import Foundation
 /// Protocol for ``QueryParser`` caches.
 public protocol QueryParserCache: AnyObject, Sendable {
 
-    /// Get a cached evaluator for a given query.
+    /// Get a cached evaluator for a given query. Keys must preserve UTF-8 byte
+    /// identity: canonically equivalent Unicode strings can select distinct IDs.
     func get(_ query: String) -> Evaluator?
 
     /// Store an evaluator for the given query.
@@ -56,7 +57,7 @@ public extension QueryParser {
         }
 
         /// Actual cache implementation.
-        private let cache: LRUCache<String, Evaluator>
+        private let cache: LRUCache<[UInt8], Evaluator>
         private let cacheLock = Mutex()
 
         /// Initialize using an explicit limit.
@@ -77,13 +78,13 @@ public extension QueryParser {
         public func get(_ query: String) -> Evaluator? {
             cacheLock.lock()
             defer { cacheLock.unlock() }
-            return cache.value(forKey: query)
+            return cache.value(forKey: Array(query.utf8))
         }
 
         public func set(_ query: String, _ evaluator: Evaluator) {
             cacheLock.lock()
             defer { cacheLock.unlock() }
-            cache.setValue(evaluator, forKey: query)
+            cache.setValue(evaluator, forKey: Array(query.utf8))
         }
     }
 

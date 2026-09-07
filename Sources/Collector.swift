@@ -42,9 +42,6 @@ open class Collector {
             }
             return elements
         }
-        if let hasEval = eval as? StructuralEvaluator.Has {
-            return try collectHas(hasEval, root: root)
-        }
         let elements: Elements = Elements()
         if let andEval = eval as? CombiningEvaluator.And,
            let seeded = try seedCandidates(for: andEval, root: root) {
@@ -70,7 +67,9 @@ open class Collector {
                     }
                 }
             } else {
-                return seedElements
+                for el in seedElements.array() {
+                    if try andEval.matches(root, el) { elements.add(el) }
+                }
             }
             return elements
         }
@@ -84,45 +83,6 @@ open class Collector {
         while let el = stack.popLast() {
             let matched = try eval.matches(root, el)
             if matched {
-                elements.add(el)
-            }
-            let children = el.childNodes
-            var i = children.count
-            while i > 0 {
-                i &-= 1
-                if let childEl = children[i] as? Element {
-                    stack.append(childEl)
-                }
-            }
-        }
-        return elements
-    }
-
-    private static func collectHas(_ hasEval: StructuralEvaluator.Has, root: Element) throws -> Elements {
-        let matches = try collect(hasEval.evaluator, root)
-        if matches.isEmpty {
-            return Elements()
-        }
-        var hasDescendant = Set<ObjectIdentifier>()
-        hasDescendant.reserveCapacity(matches.size() * 2)
-        for el in matches.array() {
-            var parent = el.parent()
-            while let current = parent {
-                hasDescendant.insert(ObjectIdentifier(current))
-                if current === root { break }
-                parent = current.parent()
-            }
-        }
-        if hasDescendant.isEmpty {
-            return Elements()
-        }
-        let elements = Elements()
-        elements.reserveCapacity(hasDescendant.count)
-        var stack: ContiguousArray<Element> = []
-        stack.reserveCapacity(root.childNodes.count + 1)
-        stack.append(root)
-        while let el = stack.popLast() {
-            if hasDescendant.contains(ObjectIdentifier(el)) {
                 elements.add(el)
             }
             let children = el.childNodes
@@ -179,7 +139,7 @@ open class Collector {
 
         @inline(__always)
         func shouldSkipIndex(_ index: Int) -> Int? {
-            return evaluators.count > 1 ? index : nil
+            return index
         }
 
         for (idx, evaluator) in evaluators.enumerated() {
@@ -231,20 +191,20 @@ open class Collector {
             }
         }
 
-        for (idx, evaluator) in evaluators.enumerated() {
+        for evaluator in evaluators {
             if let attrMatchingEval = evaluator as? Evaluator.AttributeWithValueMatching {
-                return (root.getElementsByAttributeNormalized(attrMatchingEval.key.utf8Array),
-                        shouldSkipIndex(idx))
+                if Element.isAbsAttributeKey(attrMatchingEval.key.utf8Array) { return nil }
+                return (root.getElementsByAttributeNormalized(attrMatchingEval.key.utf8Array), nil)
             }
         }
 
-        for (idx, evaluator) in evaluators.enumerated() {
+        for evaluator in evaluators {
             if evaluator is Evaluator.AttributeWithValueNot {
                 continue
             }
             if let attrKeyPairEval = evaluator as? Evaluator.AttributeKeyPair {
-                return (root.getElementsByAttributeNormalized(attrKeyPairEval.keyBytes),
-                        shouldSkipIndex(idx))
+                if Element.isAbsAttributeKey(attrKeyPairEval.keyBytes) { return nil }
+                return (root.getElementsByAttributeNormalized(attrKeyPairEval.keyBytes), nil)
             }
         }
 

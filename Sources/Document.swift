@@ -804,17 +804,10 @@ open class Document: Element {
 
     override func copyForDeepClone(parent: Node?) -> Node {
         let clone = Document(_location)
-        clone._outputSettings = _outputSettings.copy() as! OutputSettings
-        clone._quirksMode = _quirksMode
-        clone.updateMetaCharset = updateMetaCharset
-        clone.sourceBuffer = nil
-        clone.parsedAsXml = parsedAsXml
-        clone.dirtySourceRoots.removeAll(keepingCapacity: false)
         return copy(clone: clone, parent: parent, copyChildren: false, rebuildIndexes: false)
     }
 
-    @inline(__always)
-    public override func copy(clone: Node, parent: Node?) -> Node {
+    override func copyCloneMetadata(to clone: Node) {
         let clone = clone as! Document
         clone._outputSettings = _outputSettings.copy() as! OutputSettings
         clone._quirksMode = _quirksMode
@@ -822,7 +815,6 @@ open class Document: Element {
         clone.sourceBuffer = nil
         clone.parsedAsXml = parsedAsXml
         clone.dirtySourceRoots.removeAll(keepingCapacity: false)
-        return super.copy(clone: clone, parent: parent)
     }
 
 }

@@ -359,12 +359,20 @@ open class Node: Equatable, Hashable {
             
             func head(_ node: Node, _ depth: Int) throws {
                 node.baseUri = baseUri
+                (node as? Element)?.invalidateSelectorResultCache()
             }
             
             func tail(_ node: Node, _ depth: Int) throws {
             }
         }
         try traverse(nodeVisitor(baseUri))
+        // Ancestors can cache selectors whose candidates resolve relative URLs
+        // within the changed subtree.
+        var ancestor = parentNode
+        while let node = ancestor {
+            (node as? Element)?.invalidateSelectorResultCache()
+            ancestor = node.parentNode
+        }
     }
     
     /**
@@ -1185,6 +1193,10 @@ open class Node: Equatable, Hashable {
     
     public func copy(clone: Node) -> Node {
         let thisClone = copy(clone: clone, parent: nil, copyChildren: true, rebuildIndexes: false, suppressQueryIndexDirty: false) // splits for orphan
+        var formCopies: [(FormElement, FormElement)] = []
+        if let originalForm = self as? FormElement, let clonedForm = thisClone as? FormElement {
+            formCopies.append((originalForm, clonedForm))
+        }
         
         // BFS clone using index-based queue, preserving original nodes to avoid extra array copies.
         var queue: [(Node, Node)] = [(self, thisClone)]
@@ -1201,6 +1213,9 @@ open class Node: Equatable, Hashable {
                 for child in originalChildren {
                     let childClone = child.copyForDeepClone(parent: cloneParent)
                     newChildren.append(childClone)
+                    if let originalForm = child as? FormElement, let clonedForm = childClone as? FormElement {
+                        formCopies.append((originalForm, clonedForm))
+                    }
                     if child.hasChildNodes() {
                         queue.append((child, childClone))
                     }
@@ -1211,8 +1226,30 @@ open class Node: Equatable, Hashable {
             }
         }
         
+        if !formCopies.isEmpty {
+            // Resolve form associations after every descendant has been copied.
+            // Controls can occur outside the form itself, but must not retain
+            // mutable nodes from outside the copied tree.
+            var elementCopies: [ObjectIdentifier: Element] = [:]
+            if let element = thisClone as? Element {
+                elementCopies[ObjectIdentifier(self)] = element
+            }
+            for (originalParent, cloneParent) in queue {
+                for (originalChild, clonedChild) in zip(originalParent.childNodes, cloneParent.childNodes) {
+                    if let element = clonedChild as? Element {
+                        elementCopies[ObjectIdentifier(originalChild)] = element
+                    }
+                }
+            }
+            for (originalForm, clonedForm) in formCopies {
+                originalForm.copyControlAssociations(to: clonedForm, using: elementCopies)
+            }
+        }
         return thisClone
     }
+
+    /// Copies subclass state for both root and descendant clone paths.
+    internal func copyCloneMetadata(to clone: Node) {}
     
     /**
      * Return a clone of the node using the given parent (which can be `nil`).
@@ -1235,6 +1272,7 @@ open class Node: Equatable, Hashable {
         rebuildIndexes: Bool,
         suppressQueryIndexDirty: Bool
     ) -> Node {
+        copyCloneMetadata(to: clone)
         if suppressQueryIndexDirty, let element = clone as? Element {
             element.suppressQueryIndexDirty = true
         }

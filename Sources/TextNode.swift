@@ -250,11 +250,11 @@ open class TextNode: Node {
      */
     open func splitText(_ offset: Int) throws -> TextNode {
         try Validate.isTrue(val: offset >= 0, msg: "Split offset must be not be negative")
-        let current = getWholeTextUTF8()
-        try Validate.isTrue(val: offset < current.count, msg: "Split offset must not be greater than current text length")
-
-        let head: String = getWholeText().substring(0, offset)
-        let tail: String = getWholeText().substring(offset)
+        let current = getWholeText()
+        try Validate.isTrue(val: offset <= current.count, msg: "Split offset must not be greater than current text length")
+        let split = current.index(current.startIndex, offsetBy: offset)
+        let head = String(current[..<split])
+        let tail = String(current[split...])
         text(head)
         let tailNode: TextNode = TextNode(tail.utf8Array, self.getBaseUriUTF8())
         if (parent() != nil) {
@@ -263,19 +263,21 @@ open class TextNode: Node {
         return tailNode
     }
     
+    /// Splits at a UTF-8 offset that lies on a Swift Character boundary.
+    /// Offsets inside a character or outside the text throw without mutation.
     open func splitText(utf8Offset: Int) throws -> TextNode {
-        // Ensure UTF-8 offset is within valid bounds
         try Validate.isTrue(val: utf8Offset >= 0, msg: "Split UTF-8 offset must not be negative")
-        let current = getWholeTextUTF8()
-        try Validate.isTrue(val: utf8Offset < current.count, msg: "Split UTF-8 offset must not exceed current text length in UTF-8 bytes")
-        
-        // Convert UTF-8 offset to extended grapheme cluster offset
-        let graphemeOffset = Substring(getWholeText().utf8.prefix(utf8Offset)).count
-        
-        // Validate grapheme cluster offset
-        try Validate.isTrue(val: graphemeOffset < current.count, msg: "Split grapheme cluster offset must not exceed current text length")
-        
-        return try splitText(graphemeOffset)
+        let current = getWholeText()
+        var byteOffset = 0
+        var characterOffset = 0
+        for character in current {
+            if byteOffset >= utf8Offset { break }
+            byteOffset += String(character).utf8.count
+            characterOffset += 1
+        }
+        try Validate.isTrue(val: byteOffset == utf8Offset,
+                            msg: "Split UTF-8 offset must be a character boundary within the text")
+        return try splitText(characterOffset)
     }
 
     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {

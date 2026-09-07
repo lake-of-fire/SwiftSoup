@@ -87,9 +87,9 @@ open class DataNode: Node {
             do {
                 let attrs = ensureAttributesForWrite()
                 // Materializing an unchanged source slice is a read.
-                let owner = attrs.ownerNode
-                attrs.ownerNode = nil
-                defer { attrs.ownerNode = owner }
+                let wasSuppressed = attrs.suppressContentNotifications
+                attrs.suppressContentNotifications = true
+                defer { attrs.suppressContentNotifications = wasSuppressed }
                 try attrs.put(DataNode.DATA_KEY, materialized)
             } catch {}
             return materialized

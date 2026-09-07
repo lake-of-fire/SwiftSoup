@@ -12,7 +12,7 @@ import Foundation
  form to easily be submitted.
  */
 public class FormElement: Element {
-    private let _elements: Elements = Elements()
+    private var _elements: Elements = Elements()
 
     /**
      Create a new, standalone form element.
@@ -140,9 +140,6 @@ public class FormElement: Element {
 
     override func copyForDeepClone(parent: Node?) -> Node {
         let clone = FormElement(_tag, baseUri!, skipChildReserve: true)
-        for att in _elements.array() {
-            clone._elements.add(att)
-        }
         return copy(
             clone: clone,
             parent: parent,
@@ -150,6 +147,10 @@ public class FormElement: Element {
             rebuildIndexes: false,
             suppressQueryIndexDirty: true
         )
+    }
+
+    internal func copyControlAssociations(to clone: FormElement, using copies: [ObjectIdentifier: Element]) {
+        clone._elements = Elements(_elements.array().compactMap { copies[ObjectIdentifier($0)] })
     }
 	public override func copy(clone: Node, parent: Node?) -> Node {
 		let clone = clone as! FormElement

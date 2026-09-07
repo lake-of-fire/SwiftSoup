@@ -79,15 +79,15 @@ open class CssSelector {
     
     private static let selectorCacheCapacity: Int = 128
     private final class SelectorCache: @unchecked Sendable {
-        var items: [String: Evaluator] = [:]
-        var order: [String] = []
+        var items: [[UInt8]: Evaluator] = [:]
+        var order: [[UInt8]] = []
         let lock = NSLock()
     }
     private static let selectorCache = SelectorCache()
     private static let fastQueryCacheCapacity: Int = selectorCacheCapacity
     private final class FastQueryCache: @unchecked Sendable {
-        var items: [String: FastQueryPlan] = [:]
-        var order: [String] = []
+        var items: [[UInt8]: FastQueryPlan] = [:]
+        var order: [[UInt8]] = []
         let lock = NSLock()
     }
     private static let fastQueryCache = FastQueryCache()
@@ -242,8 +242,9 @@ open class CssSelector {
     }
     
     private static func cachedEvaluatorTrimmed(_ key: String) throws -> Evaluator {
+        let cacheKey = Array(key.utf8)
         selectorCache.lock.lock()
-        if let cached = selectorCache.items[key] {
+        if let cached = selectorCache.items[cacheKey] {
             selectorCache.lock.unlock()
             return cached
         }
@@ -252,9 +253,9 @@ open class CssSelector {
         let parsed = try QueryParser.parse(key)
         
         selectorCache.lock.lock()
-        if selectorCache.items[key] == nil {
-            selectorCache.items[key] = parsed
-            selectorCache.order.append(key)
+        if selectorCache.items[cacheKey] == nil {
+            selectorCache.items[cacheKey] = parsed
+            selectorCache.order.append(cacheKey)
             if selectorCache.order.count > selectorCacheCapacity {
                 let overflow = selectorCache.order.count - selectorCacheCapacity
                 if overflow > 0 {
@@ -554,8 +555,9 @@ open class CssSelector {
     }
 
     private static func cachedFastQueryPlan(_ trimmed: String) -> FastQueryPlan {
+        let cacheKey = Array(trimmed.utf8)
         fastQueryCache.lock.lock()
-        if let cached = fastQueryCache.items[trimmed] {
+        if let cached = fastQueryCache.items[cacheKey] {
             fastQueryCache.lock.unlock()
             DebugTrace.log("CssSelector.cachedFastQueryPlan: cache hit")
             return cached
@@ -566,9 +568,9 @@ open class CssSelector {
         let plan = fastQueryPlan(trimmed)
         
         fastQueryCache.lock.lock()
-        if fastQueryCache.items[trimmed] == nil {
-            fastQueryCache.items[trimmed] = plan
-            fastQueryCache.order.append(trimmed)
+        if fastQueryCache.items[cacheKey] == nil {
+            fastQueryCache.items[cacheKey] = plan
+            fastQueryCache.order.append(cacheKey)
             if fastQueryCache.order.count > fastQueryCacheCapacity {
                 let overflow = fastQueryCache.order.count - fastQueryCacheCapacity
                 if overflow > 0 {
