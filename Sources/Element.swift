@@ -3030,12 +3030,11 @@ internal extension Element {
     @inline(__always)
     func cachedSelectorResult(_ query: String) -> Elements? {
         guard let cache = selectorResultCache else { return nil }
-        let root: Node
-        if let cachedRoot = selectorResultCacheRoot, cachedRoot.parentNode == nil {
-            root = cachedRoot
-        } else {
-            root = textMutationRoot()
-            selectorResultCacheRoot = root
+        // Versions belong to a particular tree. A released or reparented root
+        // cannot validate this snapshot, even if the new tree has the same version.
+        guard let root = selectorResultCacheRoot, root.parentNode == nil else {
+            invalidateSelectorResultCache()
+            return nil
         }
         let currentTextVersion = root.textMutationVersion
         if currentTextVersion != selectorResultTextVersion {

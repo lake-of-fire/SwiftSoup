@@ -2,6 +2,47 @@ import XCTest
 @testable import SwiftSoup
 
 final class SelectorCacheSnapshotTest: XCTestCase {
+    func testDescendantCacheFollowsMovedAncestor() throws {
+        let destination = try SwiftSoup.parse("<aside></aside>")
+        let root: Element
+        let text: TextNode
+        weak var releasedDocument: Document?
+        do {
+            let original = try SwiftSoup.parse("<main><section><p>before</p></section></main>")
+            releasedDocument = original
+            let moved = try XCTUnwrap(original.select("main").first())
+            root = try XCTUnwrap(moved.select("section").first())
+            let paragraph = try XCTUnwrap(root.select("p").first())
+            text = try XCTUnwrap(paragraph.childNode(0) as? TextNode)
+            // Match the destination's version after the later text edit.
+            text.text("before")
+            for _ in 0..<4 { XCTAssertEqual(try root.select("p:contains(before)").size(), 1) }
+            XCTAssertNotNil(root.cachedSelectorResult("p:contains(before)"))
+            try XCTUnwrap(destination.body()).appendChild(moved)
+        }
+        XCTAssertNil(releasedDocument)
+        text.text("after")
+        XCTAssertEqual(root.selectorResultTextVersion, destination.textMutationVersion)
+        XCTAssertEqual(try root.select("p:contains(before)").size(), 0)
+        XCTAssertEqual(try root.select("p:contains(after)").size(), 1)
+    }
+
+    func testDescendantCacheInvalidatesWhenStandaloneRootIsAdopted() throws {
+        let moved = try Element(Tag.valueOf("main"), "")
+        try moved.append("<section><p>before</p></section>")
+        let root = try XCTUnwrap(moved.select("section").first())
+        let paragraph = try XCTUnwrap(root.select("p").first())
+        let text = try XCTUnwrap(paragraph.childNode(0) as? TextNode)
+        let destination = Document("")
+        for _ in 0..<4 { XCTAssertEqual(try root.select("p:contains(before)").size(), 1) }
+        XCTAssertNotNil(root.cachedSelectorResult("p:contains(before)"))
+        try destination.appendChild(moved)
+        text.text("after")
+        XCTAssertEqual(root.selectorResultTextVersion, destination.textMutationVersion)
+        XCTAssertEqual(try root.select("p:contains(before)").size(), 0)
+        XCTAssertEqual(try root.select("p:contains(after)").size(), 1)
+    }
+
     func testSelfMatchingRootCanBeReleased() throws {
         weak var observed: Element?
         do {
