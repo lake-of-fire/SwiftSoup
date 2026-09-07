@@ -572,7 +572,8 @@ open class Element: Node {
         if Element.isAbsAttributeKey(attributeKey) {
             return nil
         }
-        return attributes.valueSliceCaseSensitive(attributeKey)
+        guard attributes.hasKeyIgnoreCase(key: attributeKey) else { return nil }
+        return try? attributes.getIgnoreCaseSlice(key: attributeKey)
     }
 
     @usableFromInline
@@ -1518,7 +1519,7 @@ open class Element: Node {
                 rebuildQueryIndexesForHotAttributes()
                 isAttributeValueQueryIndexDirty = false
             }
-            let normalizedValue = ByteSlice.fromArray(value.utf8Array).trim().lowercased()
+            let normalizedValue = Attribute.normalizedSelectorValue(.fromArray(value.utf8Array))
             let results = normalizedAttributeValueIndex?[normalizedKey]?[normalizedValue]?.compactMap { $0.value } ?? []
             return Elements(results)
         }
@@ -1536,7 +1537,7 @@ open class Element: Node {
             return try Collector.collect(Evaluator.AttributeWithValue(key, value), self)
         }
         let keySlice = ByteSlice.fromArray(keyBytes)
-        let valueSlice = ByteSlice.fromArray(valueBytes)
+        let valueSlice = Attribute.normalizedSelectorValue(.fromArray(valueBytes))
         let isHotKey = Element.isHotAttributeKey(keySlice)
         if Element.dynamicAttributeValueIndexMaxKeys > 0,
            !isHotKey {
@@ -3333,7 +3334,9 @@ internal extension Element {
                     if !trimmed.isEmpty {
                         Element.forEachClassNameWithUppercase(in: trimmed) { className, hasUppercase in
                             let key = hasUppercase ? className.lowercased() : className
-                            classIndex[key, default: []].append(Weak(element))
+                            if classIndex[key]?.last?.value !== element {
+                                classIndex[key, default: []].append(Weak(element))
+                            }
                         }
                     }
                 }
@@ -3351,10 +3354,12 @@ internal extension Element {
                 if let attrs = element.attributes {
                     attrs.ensureMaterialized()
                     let lowerKeys = attrs.hasUppercaseKeys
+                    var seenKeys = Set<ByteSlice>()
                     for attr in attrs.attributes {
                         DebugTrace.log("rebuildQueryIndexesCombined: attr key \(String(decoding: attr.getKeyUTF8(), as: UTF8.self))")
                         let keySlice = attr.keySlice
                         let key = lowerKeys ? attr.lowerKeySlice() : keySlice
+                        if lowerKeys, !seenKeys.insert(key).inserted { continue }
                         if needsAttributes {
                             attributeIndex[key, default: []].append(Weak(element))
                         }
@@ -3492,7 +3497,9 @@ internal extension Element {
                 if !trimmed.isEmpty {
                     Element.forEachClassNameWithUppercase(in: trimmed) { className, hasUppercase in
                         let key = hasUppercase ? className.lowercased() : className
-                        newIndex[key, default: []].append(Weak(element))
+                        if newIndex[key]?.last?.value !== element {
+                            newIndex[key, default: []].append(Weak(element))
+                        }
                     }
                 }
             }
@@ -3569,9 +3576,11 @@ internal extension Element {
             if let attrs = element.attributes {
                 attrs.ensureMaterialized()
                 let lowerKeys = attrs.hasUppercaseKeys
+                var seenKeys = Set<ByteSlice>()
                 for attr in attrs.attributes {
                     let keySlice = attr.keySlice
                     let key = lowerKeys ? attr.lowerKeySlice() : keySlice
+                    if lowerKeys, !seenKeys.insert(key).inserted { continue }
                     newIndex[key, default: []].append(Weak(element))
                 }
             }
@@ -3610,9 +3619,11 @@ internal extension Element {
             if let attrs = element.getAttributes() {
                 attrs.ensureMaterialized()
                 let lowerKeys = attrs.hasUppercaseKeys
+                var seenKeys = Set<ByteSlice>()
                 for attr in attrs.attributes {
                     let keySlice = attr.keySlice
                     let key = lowerKeys ? attr.lowerKeySlice() : keySlice
+                    if lowerKeys, !seenKeys.insert(key).inserted { continue }
                     guard Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false) else { continue }
                     let value = attr.lowerTrimmedValueSlice()
                     newIndex[key, default: [:]][value, default: []].append(Weak(element))

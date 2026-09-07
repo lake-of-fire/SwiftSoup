@@ -431,12 +431,20 @@ open class Attribute {
     }
 
     @usableFromInline
+    static func normalizedSelectorValue(_ value: ByteSlice) -> ByteSlice {
+        let trimmed = value.trim()
+        if StringUtil.isAscii(trimmed) { return trimmed.lowercased() }
+        let normalized = String(decoding: trimmed, as: UTF8.self).lowercased().precomposedStringWithCanonicalMapping
+        return .fromArray(Array(normalized.utf8))
+    }
+
+    @usableFromInline
     @inline(__always)
     func lowerTrimmedValueSlice() -> ByteSlice {
         if let cached = lowerTrimmedValueSliceCache {
             return cached
         }
-        let lowered = valueSliceMaterialized().trim().lowercased()
+        let lowered = Attribute.normalizedSelectorValue(valueSliceMaterialized())
         lowerTrimmedValueSliceCache = lowered
         return lowered
     }

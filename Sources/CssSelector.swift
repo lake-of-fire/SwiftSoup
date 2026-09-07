@@ -948,7 +948,7 @@ open class CssSelector {
                     return .none
                 }
                 let keyBytes = Attributes.containsAsciiUppercase(rawKeyBytes) ? rawKeyBytes.lowercased() : rawKeyBytes
-                let valueBytes = Attributes.containsAsciiUppercase(rawValueBytes) ? rawValueBytes.lowercased() : rawValueBytes
+                let valueBytes = Attribute.normalizedSelectorValue(.fromArray(rawValueBytes)).toArray()
                 let needsOriginal = keyBytes.starts(with: UTF8Arrays.absPrefix)
                 let key = needsOriginal ? String(keyPart) : ""
                 let value = needsOriginal ? String(valuePart) : ""

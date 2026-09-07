@@ -723,10 +723,25 @@ open class Document: Element {
     @usableFromInline
     internal func patchedOuterHtmlUTF8() throws -> [UInt8]? {
         guard !_outputSettings.prettyPrint(),
+              _outputSettings.encoder() == .utf8,
+              _outputSettings.escapeMode() == .base,
+              (_outputSettings.syntax() == .xml) == parsedAsXml,
               let source = sourceBuffer?.bytes else {
             return nil
         }
 
+        // Descendant patches cannot represent changes to an incomplete root's
+        // own tag/children. Foreign fragment offsets are not document offsets.
+        let dirtyRoots = currentDirtySourceRoots()
+        if sourceRangeDirty || !dirtyRoots.isEmpty {
+            guard !dirtyRoots.isEmpty,
+                  dirtyRoots.allSatisfy({ node in
+                      node.sourceRangeIsComplete && node.sourceRange?.isValid == true &&
+                      node.sourceBuffer === sourceBuffer
+                  }) else {
+                return nil
+            }
+        }
         let patches = try sourcePatches()
         if patches.isEmpty {
             return source

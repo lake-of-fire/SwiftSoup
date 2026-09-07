@@ -525,35 +525,25 @@ open class Node: Equatable, Hashable {
     @inline(__always)
     @usableFromInline
     internal func markSourceDirty(force: Bool = false) {
-        if sourceRangeDirty {
-            ownerDocument()?.registerDirtySourceRoot(self)
-            return
-        }
-        if !force, treeBuilder?.isBulkBuilding == true {
-            return
-        }
-        sourceRangeDirty = true
-        ownerDocument()?.registerDirtySourceRoot(self)
-        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
+        markSourceDirty(force: force, registerDirtyRoot: true)
     }
 
     @inline(__always)
     @usableFromInline
     internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
-        if sourceRangeDirty {
-            if registerDirtyRoot {
-                ownerDocument()?.registerDirtySourceRoot(self)
+        var current: Node? = self
+        var register = registerDirtyRoot
+        while let node = current {
+            if !node.sourceRangeDirty, !force, node.treeBuilder?.isBulkBuilding == true { return }
+            node.sourceRangeDirty = true
+            if register {
+                node.ownerDocument()?.registerDirtySourceRoot(node)
+                register = false
             }
-            return
+            // Parsing can reset an ancestor range while an implied child range
+            // stays dirty. Propagate even from an already-dirty node, iteratively.
+            current = node.parentNode
         }
-        if !force, treeBuilder?.isBulkBuilding == true {
-            return
-        }
-        sourceRangeDirty = true
-        if registerDirtyRoot {
-            ownerDocument()?.registerDirtySourceRoot(self)
-        }
-        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
     }
 
     @inline(__always)
@@ -1050,6 +1040,8 @@ open class Node: Equatable, Hashable {
     private func rawSourceSlice(_ out: OutputSettings, allowRawSource: Bool) -> ArraySlice<UInt8>? {
         guard allowRawSource,
               !out.prettyPrint(),
+              out.encoder() == .utf8,
+              out.escapeMode() == .base,
               !sourceRangeDirty,
               sourceRangeIsComplete,
               let range = sourceRange,
@@ -1060,7 +1052,7 @@ open class Node: Equatable, Hashable {
             return nil
         }
         let syntax = out.syntax()
-        if syntax == .xml && !doc.parsedAsXml {
+        if (syntax == .xml) != doc.parsedAsXml {
             return nil
         }
         if syntax == .html || syntax == .xml {
