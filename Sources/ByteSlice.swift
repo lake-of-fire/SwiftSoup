@@ -224,7 +224,10 @@ extension ByteSlice {
         if lhs.count != rhs.count { return false }
         return lhs.withUnsafeBytes { left in
             rhs.withUnsafeBytes { right in
-                left.elementsEqual(right)
+                for index in 0..<left.count {
+                    if left[index] != right[index] { return false }
+                }
+                return true
             }
         }
     }

@@ -68,6 +68,24 @@ final class ByteSliceBufferTest: XCTestCase {
             for slice in views(bytes, offset: 6) { XCTAssertEqual(dictionary[slice], i) }
         }
     }
+    func testEqualityWithLongCommonPrefixes() {
+        for length in [511, 512, 1023, 1024, 4095, 4096] {
+            let bytes = (0..<length).map { UInt8(truncatingIfNeeded: $0 &* 37) }
+            let original = ByteSlice.fromArray(bytes)
+            for offset in [0, 1, 3, 7] {
+                for view in views(bytes, offset: offset) { XCTAssertEqual(original, view) }
+                for index in [0, length / 2, length - 1] {
+                    var changed = bytes
+                    changed[index] ^= 255
+                    for view in views(changed, offset: offset) {
+                        XCTAssertNotEqual(original, view)
+                        XCTAssertNotEqual(view, original)
+                    }
+                }
+            }
+        }
+    }
+
     func testASCIIScansMatchArrayReferenceAcrossBackingStores() {
         func whitespace(_ byte: UInt8) -> Bool { byte == 32 || (byte >= 9 && byte <= 13) }
         var cases: [[UInt8]] = [[], [32], [9, 10, 11, 12, 13, 32], [0, 65, 0], [65], [90], [91], [64], [97], [255]]
