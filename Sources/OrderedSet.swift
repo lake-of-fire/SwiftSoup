@@ -64,9 +64,10 @@ public class OrderedSet<T: Hashable> {
 	*/
 	public func append(_ object: T) {
 
-		if let lastIndex = index(of: object) {
-			remove(object)
-			insert(object, at: lastIndex)
+		if let index = contents.removeValue(forKey: object) {
+			// Keep the position, but replace both stored representatives of an equal value.
+			contents[object] = index
+			sequencedContents[index] = object
 		} else {
 			contents[object] = contents.count
 			sequencedContents.append(object)
@@ -92,16 +93,11 @@ public class OrderedSet<T: Hashable> {
 	- parameter    object: The object to be removed.
 	*/
 	public func remove(_ object: T) {
-		if let index = contents[object] {
-			contents[object] = nil
+		if let index = contents.removeValue(forKey: object) {
 			sequencedContents.remove(at: index)
 
-			for (object, i) in contents {
-				if i < index {
-					continue
-				}
-
-				contents[object] = i - 1
+			for i in index..<sequencedContents.count {
+				contents[sequencedContents[i]] = i
 			}
 		}
 	}
