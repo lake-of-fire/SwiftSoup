@@ -1165,38 +1165,54 @@ open class Element: Node {
      - returns: the next element, or `nil` if there is no next element
      - seealso: ``previousElementSibling()``
      */
-    public func nextElementSibling()throws->Element? {
-        if (parentNode == nil) {return nil}
-        let siblings: Array<Element>? = parent()?.children().array()
-        let index: Int? = try Element.indexInList(self, siblings)
-        try Validate.notNull(obj: index)
-        if let siblings = siblings {
-            if (siblings.count > index!+1) {
-                return siblings[index!+1]
-            } else {
-                return nil
-            }
-        }
-        return nil
+    public func nextElementSibling() throws -> Element? {
+        return try adjacentElementSibling(forward: true)
     }
-    
+
     /**
      Gets the previous element sibling of this element.
      - returns: the previous element, or `nil` if there is no previous element
      - seealso: ``nextElementSibling()``
      */
-    public func previousElementSibling()throws->Element? {
-        if (parentNode == nil) {return nil}
-        let siblings: Array<Element>? = parent()?.children().array()
-        let index: Int? = try Element.indexInList(self, siblings)
-        try Validate.notNull(obj: index)
-        if (index! > 0) {
-            return siblings?[index!-1]
-        } else {
-            return nil
-        }
+    public func previousElementSibling() throws -> Element? {
+        return try adjacentElementSibling(forward: false)
     }
-    
+
+    private func adjacentElementSibling(forward: Bool) throws -> Element? {
+        guard parentNode != nil else { return nil }
+        let parent = parent()
+        try Validate.notNull(obj: parent)
+        let step = forward ? 1 : -1
+        let parentType = type(of: parent!)
+        if parentType != Element.self && parentType != Document.self && parentType != FormElement.self {
+            // Custom subclasses can override children(); preserve that view.
+            let siblings = parent!.children().array()
+            let index = try Element.indexInList(self, siblings)
+            try Validate.notNull(obj: index)
+            let adjacent = index! + step
+            return adjacent >= 0 && adjacent < siblings.count ? siblings[adjacent] : nil
+        }
+
+        let nodes = parent!.childNodes
+        var index = try indexInSiblingNodes(nodes) + step
+        while index >= 0 && index < nodes.count {
+            if let element = nodes[index] as? Element { return element }
+            index += step
+        }
+        return nil
+    }
+
+    private func indexInSiblingNodes(_ nodes: [Node]) throws -> Int {
+        let index = siblingIndex
+        if index >= 0, index < nodes.count, nodes[index] === self {
+            return index
+        }
+        // setSiblingIndex is public; preserve lookup behavior for a stale index.
+        let found = nodes.firstIndex { $0 === self }
+        try Validate.notNull(obj: found)
+        return found!
+    }
+
     /**
      Gets the first element sibling of this element.
      - returns: the first sibling that is an element (aka the parent's first element child)
@@ -2927,6 +2943,24 @@ internal extension Element {
         }
     }
     
+    /// Invalidates all attribute-derived indexes in a single ancestor walk.
+    @usableFromInline
+    @inline(__always)
+    func markAttributeQueryIndexesDirty() {
+        guard !(treeBuilder?.isBulkBuilding ?? false) else { return }
+        var current: Node? = self
+        while let node = current {
+            if let element = node as? Element {
+                element.isClassQueryIndexDirty = true
+                element.isIdQueryIndexDirty = true
+                element.isAttributeQueryIndexDirty = true
+                element.isAttributeValueQueryIndexDirty = true
+                element.invalidateSelectorResultCache()
+            }
+            current = node.parentNode
+        }
+    }
+
     @usableFromInline
     @inline(__always)
     func markClassQueryIndexDirty() {
