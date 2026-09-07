@@ -1257,7 +1257,7 @@ final class BenchmarkProfileTest: XCTestCase {
         }
 
         if let content = try body.getElementById("reader-content") {
-            let segments = try content.getElementsByTag("manabi-segment")
+            let segments = try content.getElementsByClass("manabi-segment")
             for segment in segments {
                 _ = segment.dataset()["jmdict-entry-ids"]
                 _ = segment.dataset()["jmnedict-entry-ids"]
@@ -1284,6 +1284,10 @@ final class BenchmarkProfileTest: XCTestCase {
 
     func testParseBenchmarkProfile() throws {
         guard ProcessInfo.processInfo.environment["SWIFTSOUP_BENCHMARK"] == "1" else {
+            return
+        }
+        if ProcessInfo.processInfo.environment["SWIFTSOUP_BENCHMARK_SET"] == "reader-pipeline" {
+            try ReaderPipelineBenchmark.run()
             return
         }
 

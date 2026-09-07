@@ -30,6 +30,18 @@ interpreting an improvement. Keep profiling runs separate from timing runs.
 - Test each optimization in isolation before any combined run.
 - Record commit SHAs, flags, iterations, and the exact command lines used.
 
+## Reader DOM pipeline workload
+Use `SWIFTSOUP_BENCHMARK_SET=reader-pipeline` with the same test filter below.
+`SWIFTSOUP_BENCHMARK_READER_MODE=structured|cache|raw` selects structured sentence
+finalization, clone/restore plus finalization, or fresh EPUB-style raw DataNode
+insertion. `SWIFTSOUP_BENCHMARK_READER_PARAGRAPHS=160` controls fixture size and
+`SWIFTSOUP_BENCHMARK_READER_XML=1` selects XML parsing/output. These synthetic
+workloads model SwiftSoup operations in Reader, excluding dictionaries and WebViews.
+They report stage times plus total elapsed time (including destruction), output
+length and a deterministic checksum. Set `SWIFTSOUP_BENCHMARK_READER_OUTPUT` to a
+file path to compare full serialized bytes across baseline and candidate.
+This workload uses the iteration count directly, without the legacy multiplier.
+
 ## Common benchmark knobs (env vars)
 - `SWIFTSOUP_BENCHMARK=1` (enable the benchmark test)
 - `SWIFTSOUP_BENCHMARK_SET=...` (comma-separated workload sets)
