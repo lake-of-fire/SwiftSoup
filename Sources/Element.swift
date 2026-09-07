@@ -2658,9 +2658,40 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     public func addClass(_ className: String) throws -> Element {
-        let classes: OrderedSet<String> = try classNames()
-        classes.append(className)
-        try classNames(classes)
+        // Delay allocating the set until a second token appears. String equality
+        // retains canonical Unicode equivalence and incoming representatives.
+        let input = try attributes?.getIgnoreCaseSlice(key: Element.classString) ?? ByteSlice.empty
+        let (single, classes) = input.withUnsafeBytes { bytes -> (String?, OrderedSet<String>?) in
+            var single: String?
+            var classes: OrderedSet<String>?
+            var i = 0
+            while i < bytes.count {
+                while i < bytes.count && bytes[i].isWhitespace { i += 1 }
+                let start = i
+                while i < bytes.count && !bytes[i].isWhitespace { i += 1 }
+                guard start < i else { break }
+                let token = String(decoding: bytes[start..<i], as: UTF8.self)
+                if let classes {
+                    classes.append(token)
+                } else if let single {
+                    let set = OrderedSet<String>()
+                    set.append(single)
+                    set.append(token)
+                    classes = set
+                } else {
+                    single = token
+                }
+            }
+            return (single, classes)
+        }
+        if let classes {
+            classes.append(className)
+            try classNames(classes)
+        } else {
+            let value = single == nil || single == className ? className : single! + " " + className
+            _ = ensureAttributes()
+            try attributes?.put(Element.classString, value.utf8Array)
+        }
         return self
     }
     

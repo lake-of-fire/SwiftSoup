@@ -25,6 +25,30 @@ final class ByteSliceBufferTest: XCTestCase {
         return result
     }
 
+    func testAddClassMatchesOrderedSetSemanticsAcrossStorage() throws {
+        let values: [[UInt8]] = [[], [9, 10, 11, 12, 13, 32], [255], [0],
+            Array("first".utf8), Array(" first \t".utf8), Array("first first second".utf8),
+            Array("é".utf8), Array("e\u{301}".utf8), Array("日本語".utf8)]
+        for value in values {
+            for slice in views(value, offset: 3) {
+                for addition in ["", "first", "FIRST", "second", "two words", " ", "é", "e\u{301}", "日本語"] {
+                    let attrs = Attributes()
+                    attrs.put(attribute: try Attribute(keySlice: .fromArray(Array("class".utf8)), valueSlice: slice))
+                    let element = Element(try Tag.valueOf("span"), "", attrs)
+                    let expected = try element.classNames()
+                    expected.append(addition)
+                    let expectedBytes = Array(StringUtil.join(expected, sep: " ").utf8)
+                    try element.addClass(addition)
+                    XCTAssertEqual(try element.attr("class").utf8Array, expectedBytes)
+                }
+            }
+        }
+        let missing = Element(try Tag.valueOf("span"), "")
+        try missing.addClass("")
+        XCTAssertTrue(missing.hasAttr("class"))
+        XCTAssertEqual(try missing.attr("class"), "")
+    }
+
     func testEqualViewsHashIdenticallyAcrossStorageAndOffsets() {
         for length in [0, 1, 2, 7, 8, 15, 16, 17, 31, 32, 63, 64, 65, 255, 256, 257] {
             let bytes = (0..<length).map { UInt8(truncatingIfNeeded: $0 &* 37) }
