@@ -101,6 +101,35 @@ final class MutationBoundaryAuditTest: XCTestCase {
         XCTAssertTrue(String(decoding: try original.outerHtmlUTF8(), as: UTF8.self).contains("<!--old-->"))
     }
 
+    func testDataNodePreservesOptionalAttributeOverrideContract() throws {
+        final class CustomDataNode: DataNode {
+            override func getAttributes() -> Attributes? { super.getAttributes() }
+        }
+        let node = CustomDataNode(Array("old".utf8), [])
+        XCTAssertEqual(node.getAttributes()?.get(key: "data"), "old")
+    }
+
+    func testParsedAndConstructedDataNodesAgreeThroughPublicAttributes() throws {
+        for operation in 0..<4 {
+            let doc = try SwiftSoup.parse("<script>old</script>")
+            let script = try XCTUnwrap(doc.select("script").first())
+            let parsed = try XCTUnwrap(script.getChildNodes().first as? DataNode)
+            let constructed = DataNode(Array("old".utf8), [])
+            for node in [parsed, constructed] {
+                switch operation {
+                case 0: try node.attr("data", "new")
+                case 1: try node.removeAttr("data")
+                case 2: try node.getAttributes()?.put("data", "new")
+                default:
+                    let attribute = try XCTUnwrap(node.getAttributes()?.asList().first)
+                    _ = attribute.setValue(value: Array("new".utf8))
+                }
+            }
+            XCTAssertEqual(parsed.getWholeData(), constructed.getWholeData(), "operation \(operation)")
+            XCTAssertEqual(try parsed.attr("data"), try constructed.attr("data"))
+        }
+    }
+
     func testDataSetterInvalidatesWarmSelectors() throws {
         let doc = try SwiftSoup.parse("<script>old</script>")
         let script = try XCTUnwrap(doc.select("script").first())

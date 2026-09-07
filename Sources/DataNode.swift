@@ -207,7 +207,9 @@ open class DataNode: Node {
     override func outerHtmlTail(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) {}
 
     private func ensureDataAttributes() {
-        _ = getWholeDataUTF8()
+        if rawDataSlice != nil || rawDataSlices != nil {
+            _ = getWholeDataUTF8()
+        }
         _ = ensureAttributesForWrite()
     }
 
@@ -221,9 +223,9 @@ open class DataNode: Node {
         return try super.attr(attributeKey)
     }
 
-    open override func getAttributes() -> Attributes {
+    open override func getAttributes() -> Attributes? {
         ensureDataAttributes()
-        return super.getAttributes()!
+        return super.getAttributes()
     }
 
     open override func attr(_ attributeKey: [UInt8], _ attributeValue: [UInt8]) throws -> Node {
