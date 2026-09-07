@@ -245,7 +245,6 @@ open class Attributes: NSCopying {
     internal func putMaterialized(_ attribute: Attribute) {
         let keySlice = attribute.keySlice
         let hasUppercase = Attributes.containsAsciiUppercase(keySlice)
-        let normalizedKey = hasUppercase ? attribute.lowerKeySlice() : keySlice
         if let ix = indexForKey(keySlice) {
             attributes[ix] = attribute
             if !keyIndexDirty, keyIndex != nil {
@@ -260,15 +259,8 @@ open class Attributes: NSCopying {
         if !hasUppercaseKeys && hasUppercase {
             hasUppercaseKeys = true
         }
-        invalidateLowercasedKeysCache()
-        if equalsSlice(normalizedKey, UTF8Arrays.class_) {
-            ownerElement?.markClassQueryIndexDirty()
-        }
-        if equalsSlice(normalizedKey, SwiftSoup.Element.idString) {
-            ownerElement?.markIdQueryIndexDirty()
-        }
-        ownerElement?.markAttributeQueryIndexDirty()
-        ownerElement?.markAttributeValueQueryIndexDirty(for: attribute.getKeyUTF8())
+        // Both replacement and append invoke attributes.didSet, which already
+        // invalidates key caches, all owner query indexes, and source reuse.
     }
     
     @usableFromInline
