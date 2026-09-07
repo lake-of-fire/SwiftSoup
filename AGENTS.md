@@ -35,7 +35,8 @@ Use `SWIFTSOUP_BENCHMARK_SET=reader-pipeline` with the same test filter below.
 `SWIFTSOUP_BENCHMARK_READER_MODE=structured|cache|raw` selects structured sentence
 finalization, clone/restore plus finalization, or fresh EPUB-style raw DataNode
 insertion. `SWIFTSOUP_BENCHMARK_READER_PARAGRAPHS=160` controls fixture size and
-`SWIFTSOUP_BENCHMARK_READER_XML=1` selects XML parsing/output. These synthetic
+`SWIFTSOUP_BENCHMARK_READER_XML=1` selects XML parsing/output. Set `SWIFTSOUP_BENCHMARK_READER_CLASS_COUNT` (default 1) to exercise
+class-addition fallback with multiple existing classes. These synthetic
 workloads model SwiftSoup operations in Reader, excluding dictionaries and WebViews.
 They report stage times plus total elapsed time (including destruction), output
 length and a deterministic checksum. Set `SWIFTSOUP_BENCHMARK_READER_OUTPUT` to a

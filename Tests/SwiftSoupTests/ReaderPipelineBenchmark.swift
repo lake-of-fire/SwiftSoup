@@ -17,10 +17,12 @@ enum ReaderPipelineBenchmark {
     }
 
     static func fixture(paragraphs: Int) -> (document: String, body: String) {
+        let classCount = max(1, Int(ProcessInfo.processInfo.environment["SWIFTSOUP_BENCHMARK_READER_CLASS_COUNT"] ?? "1") ?? 1)
+        let classes = (["mnb-seg"] + (1..<classCount).map { "existing-\($0)" }).joined(separator: " ")
         let body = (0..<paragraphs).map { p in
             let sentences = (0..<3).map { s in
                 let segments = (0..<4).map { m in
-                    "<m-m id='seg-\(p)-\(s)-\(m)' class='mnb-seg'><ruby>日本語<rt>にほんご</rt></ruby>を読む。</m-m>"
+                    "<m-m id='seg-\(p)-\(s)-\(m)' class='\(classes)'><ruby>日本語<rt>にほんご</rt></ruby>を読む。</m-m>"
                 }.joined()
                 return "<m-s h='hash-\(p)-\(s)' sid='local-\(s)'>\(segments)</m-s>"
             }.joined()
