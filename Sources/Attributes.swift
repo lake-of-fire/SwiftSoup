@@ -61,10 +61,7 @@ open class Attributes: NSCopying {
     var attributes: [Attribute] = [] {
         @inline(__always)
         didSet {
-            ownerElement?.markClassQueryIndexDirty()
-            ownerElement?.markIdQueryIndexDirty()
-            ownerElement?.markAttributeQueryIndexDirty()
-            ownerElement?.markAttributeValueQueryIndexDirty()
+            ownerElement?.markAttributeQueryIndexesDirty()
             ownerElement?.markSourceDirty()
             invalidateLowercasedKeysCache()
             invalidateKeyIndex()
@@ -172,10 +169,7 @@ open class Attributes: NSCopying {
         }
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
-        ownerElement?.markClassQueryIndexDirty()
-        ownerElement?.markIdQueryIndexDirty()
-        ownerElement?.markAttributeQueryIndexDirty()
-        ownerElement?.markAttributeValueQueryIndexDirty()
+        ownerElement?.markAttributeQueryIndexesDirty()
         ownerElement?.markSourceDirty()
     }
 
@@ -1262,10 +1256,7 @@ open class Attributes: NSCopying {
         hasUppercaseKeys = false
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
-        ownerElement?.markClassQueryIndexDirty()
-        ownerElement?.markIdQueryIndexDirty()
-        ownerElement?.markAttributeQueryIndexDirty()
-        ownerElement?.markAttributeValueQueryIndexDirty()
+        ownerElement?.markAttributeQueryIndexesDirty()
         ownerElement?.markSourceDirty()
     }
     
@@ -1307,12 +1298,9 @@ open class Attributes: NSCopying {
 
     @inline(__always)
     internal static func containsAsciiUppercase(_ key: ByteSlice) -> Bool {
-        for b in key {
-            if b >= 65 && b <= 90 {
-                return true
-            }
+        return key.withUnsafeBytes { bytes in
+            bytes.contains { $0 >= 65 && $0 <= 90 }
         }
-        return false
     }
     
 }
