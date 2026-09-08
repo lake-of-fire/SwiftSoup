@@ -1363,12 +1363,8 @@ open class Element: Node {
     public func getElementById(_ id: String) throws -> Element? {
         let idBytes = id.utf8Array
         try Validate.notEmpty(string: idBytes)
-        let needsTrim = (idBytes.first?.isWhitespace ?? false) || (idBytes.last?.isWhitespace ?? false)
-        let keySlice = ByteSlice.fromArray(idBytes)
-        let key = needsTrim ? keySlice.trim() : keySlice
-        if key.isEmpty {
-            return nil
-        }
+        // This API accepts a literal ID, not a CSS query: whitespace is significant.
+        let key = ByteSlice.fromArray(idBytes)
         if isIdQueryIndexDirty || normalizedIdIndex == nil {
             rebuildQueryIndexesForAllIds()
             isIdQueryIndexDirty = false
@@ -2464,7 +2460,7 @@ open class Element: Node {
      */
     public func className() throws -> String {
         guard let attributes else { return "" }
-        let slice = try attributes.getIgnoreCaseSlice(key: Element.classString).trim()
+        let slice = Element.trimClassWhitespace(try attributes.getIgnoreCaseSlice(key: Element.classString))
         return String(decoding: slice, as: UTF8.self)
     }
     
@@ -2475,7 +2471,7 @@ open class Element: Node {
      */
     public func classNameUTF8() throws -> [UInt8] {
         guard let attributes else { return [] }
-        return try attributes.getIgnoreCaseSlice(key: Element.classString).trim().toArray()
+        return Element.trimClassWhitespace(try attributes.getIgnoreCaseSlice(key: Element.classString)).toArray()
     }
     
     /**
@@ -2495,13 +2491,13 @@ open class Element: Node {
         
         while i < len {
             // Skip any leading whitespace
-            while i < len && input[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(input[i]) {
                 i += 1
             }
             let start = i
             
             // Find the end of the class name
-            while i < len && !input[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(input[i]) {
                 i += 1
             }
             
@@ -2530,13 +2526,13 @@ open class Element: Node {
         
         while i < len {
             // Skip any leading whitespace
-            while i < len && input[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(input[i]) {
                 i += 1
             }
             let start = i
             
             // Find the end of the class name
-            while i < len && !input[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(input[i]) {
                 i += 1
             }
             
@@ -2561,11 +2557,11 @@ open class Element: Node {
         let len = utf8ClassName.count
         var i = 0
         while i < len {
-            while i < len && utf8ClassName[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(utf8ClassName[i]) {
                 i += 1
             }
             let start = i
-            while i < len && !utf8ClassName[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(utf8ClassName[i]) {
                 i += 1
             }
             if start < i {
@@ -2620,7 +2616,19 @@ open class Element: Node {
             return false
         }
         if len == wantLen {
-            return StringUtil.equalsIgnoreCase(className, classAttr)
+            // Equal-length attributes can still contain multiple classes or
+            // surrounding whitespace. An escaped class identifier must never
+            // match that entire class list as though it were one token.
+            return classAttr.withUnsafeBytes { bytes in
+                for i in bytes.indices {
+                    let byte = bytes[i]
+                    if StringUtil.isAsciiWhitespaceByte(byte) ||
+                        Attributes.asciiLowercase(byte) != Attributes.asciiLowercase(className[i]) {
+                        return false
+                    }
+                }
+                return true
+            }
         }
 
         @inline(__always)
@@ -2645,7 +2653,7 @@ open class Element: Node {
         var inToken = false
         while i < len {
             let b = classAttr[i]
-            if b.isWhitespace {
+            if StringUtil.isAsciiWhitespaceByte(b) {
                 if inToken {
                     let tokenLen = i - tokenStart
                     if tokenLen == wantLen && equalsIgnoreCaseSlice(classAttr, tokenStart, tokenLen, className) {
@@ -3178,16 +3186,27 @@ internal extension Element {
         }
     }
 
+    // Class tokens use HTML ASCII whitespace; U+000B is part of a token.
+    private static func trimClassWhitespace(_ bytes: ByteSlice) -> ByteSlice {
+        return bytes.withUnsafeBytes { buffer in
+            var start = 0
+            var end = buffer.count
+            while start < end, StringUtil.isAsciiWhitespaceByte(buffer[start]) { start += 1 }
+            while start < end, StringUtil.isAsciiWhitespaceByte(buffer[end - 1]) { end -= 1 }
+            return bytes[start..<end]
+        }
+    }
+
     @inline(__always)
     private static func forEachClassName(in bytes: [UInt8], _ visitor: (ArraySlice<UInt8>) -> Void) {
         var i = 0
         let len = bytes.count
         while i < len {
-            while i < len && bytes[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 i &+= 1
             }
             let start = i
-            while i < len && !bytes[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 i &+= 1
             }
             if start < i {
@@ -3201,12 +3220,12 @@ internal extension Element {
         var i = 0
         let len = bytes.count
         while i < len {
-            while i < len && bytes[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 i &+= 1
             }
             let start = i
             var hasUppercase = false
-            while i < len && !bytes[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 let b = bytes[i]
                 if !hasUppercase && b >= 65 && b <= 90 {
                     hasUppercase = true
@@ -3224,12 +3243,12 @@ internal extension Element {
         var i = 0
         let len = bytes.count
         while i < len {
-            while i < len && bytes[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 i &+= 1
             }
             let start = i
             var hasUppercase = false
-            while i < len && !bytes[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 let b = bytes[i]
                 if !hasUppercase && b >= 65 && b <= 90 {
                     hasUppercase = true
@@ -3316,12 +3335,9 @@ internal extension Element {
                 if let attrs = element.attributes,
                    let classValue = try? attrs.getIgnoreCaseSlice(key: Element.classString),
                    !classValue.isEmpty {
-                    let trimmed = classValue.trim()
-                    if !trimmed.isEmpty {
-                        Element.forEachClassNameWithUppercase(in: trimmed) { className, hasUppercase in
-                            let key = hasUppercase ? className.lowercased() : className
-                            classIndex[key, default: []].append(Weak(element))
-                        }
+                    Element.forEachClassNameWithUppercase(in: classValue) { className, hasUppercase in
+                        let key = hasUppercase ? className.lowercased() : className
+                        classIndex[key, default: []].append(Weak(element))
                     }
                 }
             }
@@ -3475,12 +3491,9 @@ internal extension Element {
             if let attrs = element.attributes,
                let classValue = try? attrs.getIgnoreCaseSlice(key: Element.classString),
                !classValue.isEmpty {
-                let trimmed = classValue.trim()
-                if !trimmed.isEmpty {
-                    Element.forEachClassNameWithUppercase(in: trimmed) { className, hasUppercase in
-                        let key = hasUppercase ? className.lowercased() : className
-                        newIndex[key, default: []].append(Weak(element))
-                    }
+                Element.forEachClassNameWithUppercase(in: classValue) { className, hasUppercase in
+                    let key = hasUppercase ? className.lowercased() : className
+                    newIndex[key, default: []].append(Weak(element))
                 }
             }
         }

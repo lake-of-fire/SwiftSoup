@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Treat `getElementById` arguments as literal IDs, retaining leading/trailing whitespace. Callers that intentionally accepted padded input must now trim it themselves. Recognize form feed as a descendant combinator rather than an ID byte in the selector fast path.
+* Preserve escaped trailing spaces and non-ASCII identifier content while removing CSS query padding, including direct parser and multi-root selection paths.
+* Scan balanced and compound selectors at code-point boundaries; handle backslash parity and paired quote delimiters correctly. Unicode prepend characters no longer absorb closing parentheses or combinators. The public balanced scanner still supports multi-scalar delimiters.
+* Match class tokens, never an entire whitespace-separated class list. Use HTML's five ASCII whitespace separators consistently in class getters, predicates, and indexes; vertical tab (U+000B) remains part of a class token.
 * Preserve byte-distinct Unicode selector spellings in the parser, evaluator, fast-plan, and per-root result caches. Custom `QueryParserCache` implementations must also use code-point-exact key equality rather than Swift's canonical-equivalence equality.
 * Generate ID/class escapes by Unicode scalar, preserving combining marks (including immediately after `#`/`.`), emoji, leading digits, controls, and literal backslashes. Escape spaces as code points so query trimming does not remove significant trailing spaces. CSS represents U+0000 as U+FFFD, not as a literal NUL.
 * Preserve whitespace decoded from ID escapes during indexed selection. Anchor `:has(> ...)` against each candidate element and avoid the collect-once shortcut for root-dependent predicates.

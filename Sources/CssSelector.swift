@@ -93,7 +93,7 @@ open class CssSelector {
     private static let fastQueryCache = FastQueryCache()
 
     private init(_ query: String, _ root: Element)throws {
-        let query = query.trim()
+        let query = TokenQueue.trimCssQuery(query)
         try Validate.notEmpty(string: query.utf8Array)
 
         self.evaluator = try CssSelector.cachedEvaluatorTrimmed(query)
@@ -115,7 +115,7 @@ open class CssSelector {
      - throws ``Exception`` with ``ExceptionType/SelectorParseException`` (unchecked) on an invalid CSS query.
      */
     public static func select(_ query: String, _ root: Element)throws->Elements {
-        let query = query.trim()
+        let query = TokenQueue.trimCssQuery(query)
         try Validate.notEmpty(string: query.utf8Array)
         DebugTrace.log("CssSelector.select(query): \(query)")
         if let cached = root.cachedSelectorResult(query) {
@@ -159,7 +159,7 @@ open class CssSelector {
      - returns: matching elements, empty if none
      */
     public static func select(_ query: String, _ roots: Array<Element>)throws->Elements {
-        let query = query.trim()
+        let query = TokenQueue.trimCssQuery(query)
         try Validate.notEmpty(string: query.utf8Array)
         if roots.count == 1, let root = roots.first {
             if let cached = root.cachedSelectorResult(query) {
@@ -822,6 +822,7 @@ open class CssSelector {
                 case TokeniserStateVars.spaceByte,
                      TokeniserStateVars.tabByte,
                      TokeniserStateVars.newLineByte,
+                     TokeniserStateVars.formFeedByte,
                      TokeniserStateVars.carriageReturnByte,
                      TokeniserStateVars.commaByte,
                      TokeniserStateVars.greaterThanByte,

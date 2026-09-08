@@ -48,6 +48,7 @@ public class QueryParser {
      - seealso: ``cache``
      */
     public static func parse(_ query: String)throws->Evaluator {
+        let query = TokenQueue.trimCssQuery(query)
         let cache = Self.cache
         if let cached = cache?.get(query) {
             return cached
@@ -161,25 +162,7 @@ public class QueryParser {
     }
 
     private func consumeSubQuery() -> String {
-        var sq = ""
-        while (!tq.isEmpty()) {
-            if tq.matchesCS("\\") {
-                sq.append(tq.consumeCssEscapeSequence())
-            } else if (tq.matches("(")) {
-                sq.append("(")
-                sq.append(tq.chompBalanced("(", ")"))
-                sq.append(")")
-            } else if (tq.matches("[")) {
-                sq.append("[")
-                sq.append(tq.chompBalanced("[", "]"))
-                sq.append("]")
-            } else if (tq.matchesAny(QueryParser.combinators)) {
-                break
-            } else {
-                sq.append(tq.consume())
-            }
-        }
-        return sq
+        return tq.consumeCssSubQuery()
     }
 
     private func findElements() throws {
