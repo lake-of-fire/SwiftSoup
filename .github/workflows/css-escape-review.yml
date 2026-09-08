@@ -1,0 +1,25 @@
+name: CSS fork integration evidence
+on:
+  push:
+    branches: [fix/css-hex-identifier-escapes-20260908]
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Capture pinned trees
+        run: |
+          mkdir -p /tmp/css-integration
+          git fetch --depth=1 origin cb57c9e160da093c7dd87eb91d335b6891d0efb7 18b80329749eca5ea29fc50211dca5c7eff5bfec
+          git archive cb57c9e160da093c7dd87eb91d335b6891d0efb7 | gzip > /tmp/css-integration/master.tar.gz
+          git archive 18b80329749eca5ea29fc50211dca5c7eff5bfec | gzip > /tmp/css-integration/base.tar.gz
+          git rev-parse HEAD > /tmp/css-integration/head.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: css-fork-integration
+          path: /tmp/css-integration
+          retention-days: 7
