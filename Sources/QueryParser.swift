@@ -329,7 +329,36 @@ public class QueryParser {
         try tq.consume(":has")
         let subQuery: String = tq.chompBalanced("(", ")")
         try Validate.notEmpty(string: subQuery, msg: ":has(el) subselect must not be empty")
-        evals.append(StructuralEvaluator.Has(try QueryParser.parse(subQuery)))
+        // Each selector-list branch has its own anchor. Ordinary selectors keep
+        // SwiftSoup's historical outer-root semantics; leading combinators are
+        // relative to the element tested by :has.
+        let queue = TokenQueue(subQuery)
+        var groups: [String] = []
+        var group = ""
+        while !queue.isEmpty() {
+            if queue.matchesCS("\\") {
+                group.append(queue.consume())
+                if !queue.isEmpty() { group.append(queue.consume()) }
+            } else if queue.matches("(") {
+                group += "(" + queue.chompBalanced("(", ")") + ")"
+            } else if queue.matches("[") {
+                group += "[" + queue.chompBalanced("[", "]") + "]"
+            } else if queue.matchChomp(",") {
+                groups.append(group.trim())
+                group = ""
+            } else {
+                group.append(queue.consume())
+            }
+        }
+        groups.append(group.trim())
+        let branches: [Evaluator] = try groups.map { query in
+            try Validate.notEmpty(string: query, msg: ":has selector-list branch must not be empty")
+            let leading = query.first
+            return StructuralEvaluator.Has(try QueryParser.parse(query),
+                relative: leading == ">" || leading == "+" || leading == "~",
+                followingSiblings: leading == "+" || leading == "~")
+        }
+        evals.append(branches.count == 1 ? branches[0] : CombiningEvaluator.Or(branches))
     }
 
     // pseudo selector :contains(text), containsOwn(text)

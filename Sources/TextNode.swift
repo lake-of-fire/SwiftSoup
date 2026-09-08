@@ -255,6 +255,10 @@ open class TextNode: Node {
         let split = current.index(current.startIndex, offsetBy: offset)
         let head = String(current[..<split])
         let tail = String(current[split...])
+        return try splitText(head: head, tail: tail)
+    }
+
+    private func splitText(head: String, tail: String) throws -> TextNode {
         text(head)
         let tailNode: TextNode = TextNode(tail.utf8Array, self.getBaseUriUTF8())
         if (parent() != nil) {
@@ -263,21 +267,18 @@ open class TextNode: Node {
         return tailNode
     }
     
-    /// Splits at a UTF-8 offset that lies on a Swift Character boundary.
-    /// Offsets inside a character or outside the text throw without mutation.
+    /// Splits at an exact UTF-8 offset on a Unicode-scalar boundary.
+    /// Offsets inside a UTF-8 sequence or outside the text throw without mutation.
     open func splitText(utf8Offset: Int) throws -> TextNode {
-        try Validate.isTrue(val: utf8Offset >= 0, msg: "Split UTF-8 offset must not be negative")
-        let current = getWholeText()
-        var byteOffset = 0
-        var characterOffset = 0
-        for character in current {
-            if byteOffset >= utf8Offset { break }
-            byteOffset += String(character).utf8.count
-            characterOffset += 1
+        let current = getWholeTextUTF8()
+        try Validate.isTrue(val: utf8Offset >= 0 && utf8Offset <= current.count,
+                            msg: "Split UTF-8 offset must be within the text")
+        guard let head = String(bytes: current[..<utf8Offset], encoding: .utf8),
+              let tail = String(bytes: current[utf8Offset...], encoding: .utf8) else {
+            throw Exception.Error(type: .IllegalArgumentException,
+                                  Message: "Split UTF-8 offset must be a Unicode-scalar boundary in valid UTF-8 text")
         }
-        try Validate.isTrue(val: byteOffset == utf8Offset,
-                            msg: "Split UTF-8 offset must be a character boundary within the text")
-        return try splitText(characterOffset)
+        return try splitText(head: head, tail: tail)
     }
 
     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {

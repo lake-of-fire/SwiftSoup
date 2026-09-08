@@ -24,23 +24,39 @@ public class StructuralEvaluator: Evaluator, @unchecked Sendable {
     }
 
     public class Has: StructuralEvaluator, @unchecked Sendable {
+        internal let usesRelativeScope: Bool
+        private let searchesFollowingSiblings: Bool
+
         public override init(_ evaluator: Evaluator) {
+            usesRelativeScope = false
+            searchesFollowingSiblings = false
+            super.init(evaluator)
+        }
+
+        internal init(_ evaluator: Evaluator, relative: Bool, followingSiblings: Bool) {
+            usesRelativeScope = relative
+            searchesFollowingSiblings = followingSiblings
             super.init(evaluator)
         }
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
+            let matchingRoot = usesRelativeScope ? element : root
             var stack: [Element] = []
-            let children = element.childNodes
-            if !children.isEmpty {
-                for child in children.reversed() {
-                    if let childEl = child as? Element {
-                        stack.append(childEl)
-                    }
+            if searchesFollowingSiblings {
+                var sibling = try element.nextElementSibling()
+                while let next = sibling {
+                    stack.append(next)
+                    sibling = try next.nextElementSibling()
+                }
+                stack.reverse()
+            } else {
+                for child in element.childNodes.reversed() {
+                    if let childEl = child as? Element { stack.append(childEl) }
                 }
             }
             while let current = stack.popLast() {
                 do {
-                    if try evaluator.matches(element, current) {
+                    if try evaluator.matches(matchingRoot, current) {
                         return true
                     }
                 } catch {}

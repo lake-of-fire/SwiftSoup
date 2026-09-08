@@ -22,8 +22,8 @@ final class TreeBoundaryRegressionTest: XCTestCase {
         XCTAssertEqual(try doc.select("section:has(> p)").array().map { $0.id() }, ["direct"])
         XCTAssertEqual(try doc.select("section:has(> div > p)").array().map { $0.id() }, ["nested"])
         XCTAssertEqual(try doc.select("section:not(:has(> p))").array().map { $0.id() }, ["nested"])
-        // Ancestors outside the candidate cannot satisfy the inner query.
-        XCTAssertEqual(try doc.select("section:has(body p)").size(), 0)
+        // Ordinary inner queries retain SwiftSoup's historical outer scope.
+        XCTAssertEqual(try doc.select("section:has(body p)").size(), 2)
     }
 
     func testInvalidUnicodeSplitOffsetsThrowWithoutMutating() throws {
