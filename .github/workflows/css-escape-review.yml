@@ -1,0 +1,45 @@
+name: CSS class regression evidence
+on:
+  push:
+    branches: [fix/css-hex-identifier-escapes-20260908]
+permissions:
+  contents: write
+jobs:
+  evidence:
+    if: github.repository == 'lake-of-fire/SwiftSoup'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare verified blobs without moving refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, subprocess, urllib.request, zlib
+          encoded = '''eNqlVMlu2zAQvfsrBswhFCRTthugRZAYDtwccgna2l2ApgdKoh0CWhiSSuoG/vcORUuW6zQoUB1EvCFne/PI4XAIPF5UtU6FiT/WQm8+cG2EZuZJruwgDENIXtmfzWA4GY2jtxC65R3MZgNwn9LykVsBq7pMIdnMc24MDcDe6+rJwLM/5L5cWEjd7i0vxDksrJblGi7BPrC0Kk1diLkxN5korVxJoWmwd7V6A194LjNMxMrKXhfKbqhpIpzvgwaDYeshHnluGFdKlBm9RlBzW2nmq+scGEYoaBAEg7B1jGP4ei+tMIqnAjKRVpnIYKWrAngJwqRcCZAGZFcoYPUWQQRYGTw45kDxLMPa2D7uvxUU7JreDuBFdpd83ed22Ax1KYw18cKNCeenPEQuFyIXKSb5XErXxSex1sIYWZXuxMHY/yeCE8Z4chadQeiWybhTxq6R9vs2X14ZFJS9fqh5Tt1MsyplpslBicE/Rj6/54YqxpOABMzIX4IGEUw6WkLPaEMHDsm+9wNqaNzP7cbcVnaJsy1E1ucr7GsRkzv1YRld40w5yVNyUXBZTi+Ul9blKU9OpypH20Ws0DytPR8NipuzJDgMbrle4+Lj99tU2Bbu0HHPYVVpoF5aEeCScx2ALOE7PSF3fATkJAJyVz9fjbYE2XDWyWj0prM7gDs/+h12cfdCjUCUDVu74D4ThEB4QqJW2x66NG5F6I9FsIP+2HGy9p76zhm3VlPS8Iex90UEx16uTKXFSv5s6iIMHYhq/o5bmAIjL6ZrU/JGVl6shiLbURsvbFuOdnW9kH57aOrB7cGzcNVe/wzmiwX4B+KVl0CLonrkSS7++ia4xv2e6/uEMBwrIMs4VgQ8cdCDlof2wBEd3eVa6lr8ebeaHAGTxr+bOFtvOeoUb+t28Buf5NOK'''
+          patch = zlib.decompress(base64.b64decode(encoded, validate=True))
+          digest = hashlib.sha256(patch).hexdigest()
+          assert digest == '80dad9493078950da54bffcc649cf1cc1c1aa687ae1b712c9fb1571eb26be869', digest
+          subprocess.run(['git', 'apply', '--check', '-'], input=patch, check=True)
+          subprocess.run(['git', 'apply', '-'], input=patch, check=True)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          entries = []
+          for path in ['Sources/QueryParser.swift', 'Tests/SwiftSoupTests/CssSelectorUnicodeRegressionTest.swift']:
+              data = pathlib.Path(path).read_bytes()
+              request = urllib.request.Request('https://api.github.com/repos/lake-of-fire/SwiftSoup/git/blobs', data=json.dumps({'encoding':'base64','content':base64.b64encode(data).decode()}).encode(), headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Content-Type':'application/json'}, method='POST')
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  sha = json.load(response)['sha']
+              assert sha == hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+              entries.append({'path':path,'mode':'100644','type':'blob','sha':sha})
+          destination = pathlib.Path('/tmp/css-final')
+          destination.mkdir()
+          (destination/'blobs.json').write_text(json.dumps({'patch_sha256':digest,'tree_elements':entries},indent=2))
+          print(json.dumps(entries,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: css-class-blobs
+          path: /tmp/css-final
+          retention-days: 7
