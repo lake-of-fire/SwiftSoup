@@ -1,0 +1,27 @@
+name: CSS review pinned source export
+on:
+  push:
+    branches: [fix/css-hex-identifier-escapes-20260908]
+permissions:
+  contents: read
+jobs:
+  export:
+    if: github.repository == 'lake-of-fire/SwiftSoup'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a22098684d58378bb9ea9c3e53a08f8170554cbe
+          persist-credentials: false
+      - name: Export pinned source and blob manifest
+        run: |
+          mkdir -p /tmp/css-review3-source
+          git rev-parse HEAD > /tmp/css-review3-source/commit.txt
+          git rev-parse HEAD^{tree} > /tmp/css-review3-source/tree.txt
+          git ls-tree -rz HEAD > /tmp/css-review3-source/tree-manifest.bin
+          git archive HEAD | gzip > /tmp/css-review3-source/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: css-review3-source
+          path: /tmp/css-review3-source
+          retention-days: 7
