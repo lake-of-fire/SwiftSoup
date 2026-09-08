@@ -410,29 +410,104 @@ open class TokenQueue {
     }
 
     /**
-     Consume a CSS identifier (ID or class) off the queue (letter, digit, `-`, `_`)
-     http://www.w3.org/TR/CSS2/syndata.html#value-def-identifier
+     Consume a CSS identifier (ID or class), decoding simple and hexadecimal escapes.
+     Hex escapes consume one to six digits and one optional CSS whitespace terminator.
+     https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point
      - returns: identifier
      */
     open func consumeCssIdentifier() -> String {
+        let start = queue.index(queue.startIndex, offsetBy: pos)
+        var cursor = start
+        let bytes = queue.utf8
         let accum = StringBuilder()
-        while !isEmpty() {
-            let c = queue.charAt(pos)
-            if c == TokenQueue.ESC {
-                pos += 1
-                if !isEmpty() {
-                    accum.append(queue.charAt(pos))
-                    pos += 1
+        while cursor < bytes.endIndex {
+            let byte = bytes[cursor]
+            if byte == 0x5C { // backslash
+                let escape = cssEscape(at: cursor)
+                if let scalar = escape.scalar {
+                    accum.appendCodePoint(scalar)
+                } else {
+                    // Preserve the existing handling of non-hex escapes and a trailing backslash.
+                    for byte in bytes[bytes.index(after: cursor)..<escape.end] {
+                        accum.append(byte)
+                    }
                 }
-            } else if Character.isLetterOrDigit(c) || c == "-" || c == "_" {
-                accum.append(c)
-                pos += 1
+                cursor = escape.end
+            } else if (byte >= 0x30 && byte <= 0x39) ||
+                        (byte >= 0x41 && byte <= 0x5A) ||
+                        (byte >= 0x61 && byte <= 0x7A) ||
+                        byte == 0x2D || byte == 0x5F || byte >= 0x80 {
+                // CSS permits non-ASCII code points, including combining marks after a hex digit.
+                accum.append(byte)
+                bytes.formIndex(after: &cursor)
             } else {
                 break
             }
         }
-
+        advanceCssPosition(from: start, to: cursor)
         return accum.toString()
+    }
+
+    /// Preserve an entire escape while splitting a selector. Its optional whitespace is not a combinator.
+    internal func consumeCssEscapeSequence() -> String {
+        let start = queue.index(queue.startIndex, offsetBy: pos)
+        guard start < queue.endIndex, queue.utf8[start] == 0x5C else { return "" }
+        let end = cssEscape(at: start).end
+        let escaped = String(decoding: queue.utf8[start..<end], as: UTF8.self)
+        advanceCssPosition(from: start, to: end)
+        return escaped
+    }
+
+    /// A nil scalar means a non-hex escape: retain its literal contents after the backslash.
+    private func cssEscape(at start: String.Index) -> (end: String.Index, scalar: UnicodeScalar?) {
+        let bytes = queue.utf8
+        var cursor = bytes.index(after: start)
+        var value: UInt32 = 0
+        var digits = 0
+        while cursor < bytes.endIndex, digits < 6, let digit = TokenQueue.cssHexValue(bytes[cursor]) {
+            value = value * 16 + digit
+            digits += 1
+            bytes.formIndex(after: &cursor)
+        }
+        if digits == 0 {
+            if cursor < bytes.endIndex {
+                cursor = queue.index(after: cursor)
+            }
+            return (cursor, nil)
+        }
+        if cursor < bytes.endIndex {
+            let terminator = bytes[cursor]
+            if terminator == 0x20 || terminator == 0x09 || terminator == 0x0A ||
+                terminator == 0x0C || terminator == 0x0D {
+                bytes.formIndex(after: &cursor)
+                // CSS preprocessing treats CRLF as one newline, not two terminators.
+                if terminator == 0x0D, cursor < bytes.endIndex, bytes[cursor] == 0x0A {
+                    bytes.formIndex(after: &cursor)
+                }
+            }
+        }
+        let replacement: UnicodeScalar = "\u{FFFD}"
+        return (cursor, value == 0 ? replacement : (UnicodeScalar(value) ?? replacement))
+    }
+
+    @inline(__always)
+    private static func cssHexValue(_ byte: UInt8) -> UInt32? {
+        switch byte {
+        case 0x30...0x39: return UInt32(byte - 0x30)
+        case 0x41...0x46: return UInt32(byte - 0x41 + 10)
+        case 0x61...0x66: return UInt32(byte - 0x61 + 10)
+        default: return nil
+        }
+    }
+
+    private func advanceCssPosition(from start: String.Index, to end: String.Index) {
+        if end.samePosition(in: queue) != nil {
+            pos += queue.distance(from: start, to: end)
+        } else {
+            // A hex digit can share a grapheme with a following combining mark. Do not skip that mark.
+            queue = String(decoding: queue.utf8[end...], as: UTF8.self)
+            pos = 0
+        }
     }
 
     /**
