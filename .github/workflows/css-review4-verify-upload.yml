@@ -12,6 +12,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: 2c4d4172fc827dc6365557eb868ccedb3bb97cbe
+          fetch-depth: 2
           persist-credentials: false
       - name: Verify patch checksum and source tree before upload
         env:
