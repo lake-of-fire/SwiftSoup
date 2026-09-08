@@ -664,7 +664,7 @@ class HtmlTreeBuilder: TreeBuilder {
     
     @discardableResult
     func onStack(_ el: Element) -> Bool {
-        return isElementInQueue(stack, el)
+        return lastIndexOfStackElement(el) != nil
     }
     
     private func isElementInQueue(_ queue: Array<Element?>, _ element: Element?) -> Bool {
