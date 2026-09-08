@@ -15,12 +15,12 @@ import Foundation
 final class SelectorResultCache {
     @usableFromInline
     final class LRUNode {
-        let key: String
+        let key: SelectorQueryKey
         var value: Elements
         var prev: LRUNode?
         var next: LRUNode?
 
-        init(key: String, value: Elements) {
+        init(key: SelectorQueryKey, value: Elements) {
             self.key = key
             self.value = value
         }
@@ -29,7 +29,7 @@ final class SelectorResultCache {
     @usableFromInline
     final class LRUMap {
         let capacity: Int
-        private var nodes: [String: LRUNode] = [:]
+        private var nodes: [SelectorQueryKey: LRUNode] = [:]
         private var head: LRUNode?
         private var tail: LRUNode?
 
@@ -38,19 +38,19 @@ final class SelectorResultCache {
         }
 
         @inline(__always)
-        func contains(_ key: String) -> Bool {
+        func contains(_ key: SelectorQueryKey) -> Bool {
             return nodes[key] != nil
         }
 
         @inline(__always)
-        func get(_ key: String) -> Elements? {
+        func get(_ key: SelectorQueryKey) -> Elements? {
             guard let node = nodes[key] else { return nil }
             moveToHead(node)
             return node.value
         }
 
         @inline(__always)
-        func set(_ key: String, _ value: Elements) -> LRUNode? {
+        func set(_ key: SelectorQueryKey, _ value: Elements) -> LRUNode? {
             if let node = nodes[key] {
                 node.value = value
                 moveToHead(node)
@@ -66,7 +66,7 @@ final class SelectorResultCache {
         }
 
         @inline(__always)
-        func remove(_ key: String) -> Elements? {
+        func remove(_ key: SelectorQueryKey) -> Elements? {
             guard let node = nodes.removeValue(forKey: key) else { return nil }
             removeNode(node)
             return node.value
@@ -130,8 +130,8 @@ final class SelectorResultCache {
     @usableFromInline
     let protected: LRUMap
     private let doorkeeperCapacity: Int
-    private var doorkeeper: Set<String> = []
-    private var doorkeeperOrder: [String] = []
+    private var doorkeeper: Set<SelectorQueryKey> = []
+    private var doorkeeperOrder: [SelectorQueryKey] = []
 
     init(capacity: Int) {
         let protectedCap = max(1, (capacity * 3) / 4)
@@ -144,7 +144,8 @@ final class SelectorResultCache {
     }
 
     @inline(__always)
-    func get(_ key: String) -> Elements? {
+    func get(_ query: String) -> Elements? {
+        let key = SelectorQueryKey(query)
         if let value = protected.get(key) {
             return value
         }
@@ -158,7 +159,8 @@ final class SelectorResultCache {
     }
 
     @inline(__always)
-    func put(_ key: String, _ value: Elements) {
+    func put(_ query: String, _ value: Elements) {
+        let key = SelectorQueryKey(query)
         if protected.contains(key) {
             _ = protected.set(key, value)
             return
@@ -1091,14 +1093,31 @@ open class Element: Node {
 
     private static func cssEscapeIdentifier(_ identifier: String) -> String {
         var escaped = ""
-        escaped.reserveCapacity(identifier.count)
+        escaped.reserveCapacity(identifier.utf8.count)
 
-        for character in identifier {
-            if Character.isLetterOrDigit(character) || character == "-" || character == "_" {
-                escaped.append(character)
+        let scalars = identifier.unicodeScalars
+        let isLoneHyphen = identifier == "-"
+        for (offset, scalar) in scalars.enumerated() {
+            let value = scalar.value
+            if value == 0 {
+                // CSS cannot represent U+0000 in an identifier.
+                escaped.unicodeScalars.append("\u{FFFD}")
+            } else if value <= 0x20 || value == 0x7F ||
+                        ((0x30...0x39).contains(value) &&
+                         (offset == 0 || (offset == 1 && scalars.first == "-"))) {
+                // Hex-escape controls and leading digits. Also encode spaces so
+                // query trimming cannot remove a trailing escaped literal space.
+                escaped.append("\\")
+                escaped.append(String(value, radix: 16))
+                escaped.append(" ")
+            } else if value >= 0x80 || value == 0x5F ||
+                        (value == 0x2D && !isLoneHyphen) ||
+                        (0x30...0x39).contains(value) ||
+                        (0x41...0x5A).contains(value) || (0x61...0x7A).contains(value) {
+                escaped.unicodeScalars.append(scalar)
             } else {
                 escaped.append("\\")
-                escaped.append(character)
+                escaped.unicodeScalars.append(scalar)
             }
         }
 
@@ -1270,9 +1289,9 @@ open class Element: Node {
      */
     @usableFromInline
     func getElementsById(_ id: [UInt8]) -> Elements {
-        let needsTrim = (id.first?.isWhitespace ?? false) || (id.last?.isWhitespace ?? false)
-        let keySlice = ByteSlice.fromArray(id)
-        let key = needsTrim ? keySlice.trim() : keySlice
+        // The parser has already removed selector syntax. Whitespace decoded
+        // from an escape is part of the ID, not query padding.
+        let key = ByteSlice.fromArray(id)
         if key.isEmpty {
             return Elements()
         }

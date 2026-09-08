@@ -448,6 +448,16 @@ open class TokenQueue {
         return accum.toString()
     }
 
+    /// Consume an ASCII ID/class marker even when a following combining mark
+    /// shares its Swift Character. CSS syntax operates on code points.
+    internal func matchChompCssIdentifierPrefix(_ prefix: UInt8) -> Bool {
+        let start = queue.index(queue.startIndex, offsetBy: pos)
+        let bytes = queue.utf8
+        guard start < bytes.endIndex, bytes[start] == prefix else { return false }
+        advanceCssPosition(from: start, to: bytes.index(after: start))
+        return true
+    }
+
     /// Preserve an entire escape while splitting a selector. Its optional whitespace is not a combinator.
     internal func consumeCssEscapeSequence() -> String {
         let start = queue.index(queue.startIndex, offsetBy: pos)
@@ -471,7 +481,12 @@ open class TokenQueue {
         }
         if digits == 0 {
             if cursor < bytes.endIndex {
-                cursor = queue.index(after: cursor)
+                let first = bytes[cursor]
+                cursor = queue.unicodeScalars.index(after: cursor)
+                // Retain the legacy non-hex CRLF escape behavior.
+                if first == 0x0D, cursor < bytes.endIndex, bytes[cursor] == 0x0A {
+                    bytes.formIndex(after: &cursor)
+                }
             }
             return (cursor, nil)
         }

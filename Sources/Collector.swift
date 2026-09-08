@@ -42,7 +42,8 @@ open class Collector {
             }
             return elements
         }
-        if let hasEval = eval as? StructuralEvaluator.Has {
+        if let hasEval = eval as? StructuralEvaluator.Has,
+           isRootIndependent(hasEval.evaluator) {
             return try collectHas(hasEval, root: root)
         }
         let elements: Elements = Elements()
@@ -96,6 +97,22 @@ open class Collector {
             }
         }
         return elements
+    }
+
+    // Collect-once/mark-ancestors is valid only when the inner predicate does
+    // not depend on the candidate :has root. Relative or structural selectors
+    // must use Has.matches for each candidate instead.
+    private static func isRootIndependent(_ eval: Evaluator) -> Bool {
+        let type = type(of: eval)
+        if type == Evaluator.Tag.self || type == Evaluator.Id.self ||
+            type == Evaluator.Class.self || type == Evaluator.Attribute.self {
+            return true
+        }
+        if let combined = eval as? CombiningEvaluator,
+           combined is CombiningEvaluator.And || combined is CombiningEvaluator.Or {
+            return combined.evaluators.allSatisfy(isRootIndependent)
+        }
+        return false
     }
 
     private static func collectHas(_ hasEval: StructuralEvaluator.Has, root: Element) throws -> Elements {

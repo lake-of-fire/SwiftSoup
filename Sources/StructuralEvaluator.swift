@@ -40,7 +40,7 @@ public class StructuralEvaluator: Evaluator, @unchecked Sendable {
             }
             while let current = stack.popLast() {
                 do {
-                    if try evaluator.matches(root, current) {
+                    if try evaluator.matches(element, current) {
                         return true
                     }
                 } catch {}
