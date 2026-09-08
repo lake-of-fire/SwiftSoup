@@ -25,7 +25,7 @@ public class StructuralEvaluator: Evaluator, @unchecked Sendable {
 
     public class Has: StructuralEvaluator, @unchecked Sendable {
         internal let usesRelativeScope: Bool
-        private let searchesFollowingSiblings: Bool
+        internal let searchesFollowingSiblings: Bool
 
         public override init(_ evaluator: Evaluator) {
             usesRelativeScope = false

@@ -47,6 +47,8 @@ public extension QueryParser {
 
 
     /// Default ``QueryParser`` caching implementation.
+    /// Mutable built-in evaluator graphs are isolated on insertion and retrieval;
+    /// immutable leaves can retain their cached identity.
     final class DefaultCache: QueryParserCache {
         // The value is arbitrarily chosen. Maybe use a low limit on watchOS?
         private static let defaultCountLimit = 300
@@ -78,13 +80,13 @@ public extension QueryParser {
         public func get(_ query: String) -> Evaluator? {
             cacheLock.lock()
             defer { cacheLock.unlock() }
-            return cache.value(forKey: Array(query.utf8))
+            return cache.value(forKey: Array(query.utf8))?.isolatedCopyForCache()
         }
 
         public func set(_ query: String, _ evaluator: Evaluator) {
             cacheLock.lock()
             defer { cacheLock.unlock() }
-            cache.setValue(evaluator, forKey: Array(query.utf8))
+            cache.setValue(evaluator.isolatedCopyForCache(), forKey: Array(query.utf8))
         }
     }
 

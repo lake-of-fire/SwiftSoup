@@ -906,3 +906,31 @@ open class Evaluator: @unchecked Sendable {
         }
     }
 }
+
+// Parser-built leaves are immutable. Copy only publicly mutable OR nodes and
+// the built-in wrappers leading to them before sharing evaluator graphs.
+internal extension Evaluator {
+    func isolatedCopyForCache() -> Evaluator {
+        if let disjunction = self as? CombiningEvaluator.Or {
+            return CombiningEvaluator.Or(disjunction.evaluators.map { $0.isolatedCopyForCache() })
+        }
+        if let conjunction = self as? CombiningEvaluator.And {
+            let children = conjunction.evaluators.map { $0.isolatedCopyForCache() }
+            if zip(children, conjunction.evaluators).allSatisfy({ $0 === $1 }) { return self }
+            return CombiningEvaluator.And(children)
+        }
+        guard let structural = self as? StructuralEvaluator else { return self }
+        let child = structural.evaluator.isolatedCopyForCache()
+        if child === structural.evaluator { return self }
+        if type(of: self) == StructuralEvaluator.Has.self, let has = self as? StructuralEvaluator.Has {
+            return StructuralEvaluator.Has(child, relative: has.usesRelativeScope,
+                                           followingSiblings: has.searchesFollowingSiblings)
+        }
+        if type(of: self) == StructuralEvaluator.Not.self { return StructuralEvaluator.Not(child) }
+        if type(of: self) == StructuralEvaluator.Parent.self { return StructuralEvaluator.Parent(child) }
+        if type(of: self) == StructuralEvaluator.ImmediateParent.self { return StructuralEvaluator.ImmediateParent(child) }
+        if type(of: self) == StructuralEvaluator.PreviousSibling.self { return StructuralEvaluator.PreviousSibling(child) }
+        if type(of: self) == StructuralEvaluator.ImmediatePreviousSibling.self { return StructuralEvaluator.ImmediatePreviousSibling(child) }
+        return self
+    }
+}
