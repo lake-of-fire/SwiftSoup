@@ -1,0 +1,25 @@
+name: CSS escape review evidence
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  evidence:
+    if: github.head_ref == 'fix/css-hex-identifier-escapes-20260908'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Capture exact source
+        run: |
+          mkdir -p /tmp/css-review
+          git rev-parse HEAD > /tmp/css-review/commit.txt
+          git archive --format=tar HEAD | gzip > /tmp/css-review/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: css-review-source
+          path: /tmp/css-review
+          retention-days: 7
