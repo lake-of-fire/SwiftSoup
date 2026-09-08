@@ -881,6 +881,10 @@ open class CssSelector {
         }
         
         if let open = trimmed.firstIndex(of: "[") {
+            // The byte fast path only implements ASCII normalization. Delegate
+            // Unicode keys/values to the parser instead of selecting a different
+            // value when Unicode lowercasing or trimming changes the query.
+            guard trimmed.utf8.allSatisfy({ $0 < 0x80 }) else { return .none }
             // Find the matching close bracket for the first '[', skipping quoted content.
             // This correctly bails out for compound selectors like tag[a='x'][b='y'].
             var scanIdx = trimmed.index(after: open)
@@ -1111,6 +1115,9 @@ open class CssSelector {
             return root.getElementsByAttributeNormalized(eval.keyBytes)
         }
         if let eval = evaluator as? Evaluator.AttributeWithValue {
+            // Keep the already-parsed predicate for virtual attributes. Rebuilding
+            // it from normalized strings would lose valid quoted empty operands.
+            guard !eval.keyBytes.starts(with: UTF8Arrays.absPrefix) else { return nil }
             return try root.getElementsByAttributeValueNormalized(
                 eval.keyBytes,
                 eval.valueBytes,

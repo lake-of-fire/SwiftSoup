@@ -573,7 +573,13 @@ open class Element: Node {
         if Element.isAbsAttributeKey(attributeKey) {
             return nil
         }
-        return attributes.valueSliceCaseSensitive(attributeKey)
+        if !attributes.hasUppercaseKeys {
+            return attributes.valueSliceCaseSensitive(attributeKey)
+        }
+        // Attribute predicates are case-insensitive even after case-preserving
+        // mutation. Keep absence distinct from a present, empty value.
+        guard attributes.hasKeyIgnoreCase(key: attributeKey) else { return nil }
+        return try? attributes.getIgnoreCaseSlice(key: attributeKey)
     }
 
     @usableFromInline
@@ -1524,10 +1530,10 @@ open class Element: Node {
                 lowerAscii(bytes[2]) == UTF8Arrays.absPrefix[2] &&
                 bytes[3] == UTF8Arrays.absPrefix[3]
         }
-        if hasAbsPrefix(keyBytes) {
+        let needsTrim = (keyBytes.first?.isWhitespace ?? false) || (keyBytes.last?.isWhitespace ?? false)
+        if hasAbsPrefix(needsTrim ? keyBytes.trim() : keyBytes) {
             return try Collector.collect(Evaluator.AttributeWithValue(key, value), self)
         }
-        let needsTrim = (keyBytes.first?.isWhitespace ?? false) || (keyBytes.last?.isWhitespace ?? false)
         let keySlice = ByteSlice.fromArray(keyBytes)
         let trimmedKeySlice = needsTrim ? keySlice.trim() : keySlice
         let normalizedKey = Attributes.containsAsciiUppercase(trimmedKeySlice) ? trimmedKeySlice.lowercased() : trimmedKeySlice
@@ -3346,7 +3352,12 @@ internal extension Element {
                    !classValue.isEmpty {
                     Element.forEachClassNameWithUppercase(in: classValue) { className, hasUppercase in
                         let key = hasUppercase ? className.lowercased() : className
-                        classIndex[key, default: []].append(Weak(element))
+                        // One element may repeat a token (including case variants).
+                        // Its tokens are visited together, so only the last entry
+                        // needs checking; no per-element set or query dedup is needed.
+                        if classIndex[key]?.last?.value !== element {
+                            classIndex[key, default: []].append(Weak(element))
+                        }
                     }
                 }
             }
@@ -3502,7 +3513,9 @@ internal extension Element {
                !classValue.isEmpty {
                 Element.forEachClassNameWithUppercase(in: classValue) { className, hasUppercase in
                     let key = hasUppercase ? className.lowercased() : className
-                    newIndex[key, default: []].append(Weak(element))
+                    if newIndex[key]?.last?.value !== element {
+                        newIndex[key, default: []].append(Weak(element))
+                    }
                 }
             }
         }

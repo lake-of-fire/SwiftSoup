@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Return each element once from class indexes even when `class` repeats a token or case variant. Preserve traversal order in both combined and class-only rebuilds.
+* Distinguish missing physical attributes from present empty values in equality, inequality, and regex predicates. Empty prefix/suffix/substring operands now match nothing, as required by CSS; existing SwiftSoup case/whitespace normalization is otherwise unchanged.
+* Keep attribute fast plans consistent with the parser by delegating non-ASCII attribute selectors to it. Preserve parsed virtual `abs:` predicates with quoted empty operands, and recognize padded `abs:` keys in the public value getter.
+* Honor case-preserving attribute updates in byte-slice predicates without dropping the lowercase-key fast path. Direct mutation of an `Attribute` object obtained from the collection still has a separate, pre-existing owner/cache-invalidation limitation; use `Element.attr` / `removeAttr` for indexed DOM updates.
 * Preserve value and regex predicates when an attribute-presence index seeds a compound selector. Presence alone does not prove a prefix, suffix, substring, or regex match. Keep exact-index shortcuts and check single-predicate `And` evaluators consistently.
 * Resolve virtual `abs:` attribute presence through `hasAttr`, not the physical attribute-name index, and invalidate affected ancestor/subtree selector results when the base URI changes. Physical attribute indexes and text caches remain intact.
 * Route unescaped punctuation in bare ID selectors through the parser, matching compound-selector validation. Literal punctuation in an ID must be escaped (for example `#x\]` for ID `x]`) or supplied through `getElementById`.
