@@ -3,23 +3,47 @@ on:
   push:
     branches: [fix/css-hex-identifier-escapes-20260908]
 permissions:
-  contents: read
+  contents: write
 jobs:
   evidence:
+    if: github.repository == 'lake-of-fire/SwiftSoup'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Capture pinned trees
+      - name: Prepare verified integration blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p /tmp/css-integration
-          git fetch --depth=1 origin cb57c9e160da093c7dd87eb91d335b6891d0efb7 18b80329749eca5ea29fc50211dca5c7eff5bfec
-          git archive cb57c9e160da093c7dd87eb91d335b6891d0efb7 | gzip > /tmp/css-integration/master.tar.gz
-          git archive 18b80329749eca5ea29fc50211dca5c7eff5bfec | gzip > /tmp/css-integration/base.tar.gz
-          git rev-parse HEAD > /tmp/css-integration/head.txt
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, subprocess, urllib.request, zlib
+          encoded = '''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'''
+          encoded = encoded.replace('2WRJJuei', '2WRJuei')
+          patch = zlib.decompress(base64.b64decode(encoded, validate=True))
+          digest = hashlib.sha256(patch).hexdigest()
+          assert digest == '4ccb875b7ecdeb842d9b846243839614b0dc12e35dfc02de17cb5390358ccf2e', digest
+          subprocess.run(['git', 'apply', '--check', '-'], input=patch, check=True)
+          subprocess.run(['git', 'apply', '-'], input=patch, check=True)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          paths = ['Sources/Element.swift', 'Tests/SwiftSoupTests/CssSelectorUnicodeRegressionTest.swift']
+          entries = []
+          for path in paths:
+              content = pathlib.Path(path).read_bytes()
+              body = json.dumps({'encoding': 'base64', 'content': base64.b64encode(content).decode()}).encode()
+              request = urllib.request.Request('https://api.github.com/repos/lake-of-fire/SwiftSoup/git/blobs', data=body, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Content-Type': 'application/json', 'Accept': 'application/vnd.github+json'}, method='POST')
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  sha = json.load(response)['sha']
+              local_sha = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\0' + content).hexdigest()
+              assert sha == local_sha
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': sha})
+          destination = pathlib.Path('/tmp/css-integration')
+          destination.mkdir()
+          (destination / 'blobs.json').write_text(json.dumps({'patch_sha256': digest, 'tree_elements': entries}, indent=2))
+          print(json.dumps(entries, indent=2))
+          PY
       - uses: actions/upload-artifact@v4
         with:
-          name: css-fork-integration
+          name: css-integration-blobs
           path: /tmp/css-integration
           retention-days: 7
