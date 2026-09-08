@@ -14,27 +14,31 @@ import Foundation
 @usableFromInline
 final class SelectorResultCache {
     @usableFromInline
-    final class LRUNode {
+    final class LRUNode<Value> {
         let key: String
-        var value: Elements
-        var prev: LRUNode?
-        var next: LRUNode?
+        var value: Value
+        var prev: LRUNode<Value>?
+        var next: LRUNode<Value>?
 
-        init(key: String, value: Elements) {
+        init(key: String, value: Value) {
             self.key = key
             self.value = value
         }
     }
 
     @usableFromInline
-    final class LRUMap {
+    final class Storage<Value> {
         let capacity: Int
-        private var nodes: [String: LRUNode] = [:]
-        private var head: LRUNode?
-        private var tail: LRUNode?
+        private var nodes: [String: LRUNode<Value>] = [:]
+        private var head: LRUNode<Value>?
+        private var tail: LRUNode<Value>?
 
         init(capacity: Int) {
             self.capacity = max(1, capacity)
+        }
+
+        deinit {
+            clear()
         }
 
         @inline(__always)
@@ -43,14 +47,14 @@ final class SelectorResultCache {
         }
 
         @inline(__always)
-        func get(_ key: String) -> Elements? {
+        func get(_ key: String) -> Value? {
             guard let node = nodes[key] else { return nil }
             moveToHead(node)
             return node.value
         }
 
         @inline(__always)
-        func set(_ key: String, _ value: Elements) -> LRUNode? {
+        func set(_ key: String, _ value: Value) -> LRUNode<Value>? {
             if let node = nodes[key] {
                 node.value = value
                 moveToHead(node)
@@ -66,14 +70,14 @@ final class SelectorResultCache {
         }
 
         @inline(__always)
-        func remove(_ key: String) -> Elements? {
+        func remove(_ key: String) -> Value? {
             guard let node = nodes.removeValue(forKey: key) else { return nil }
             removeNode(node)
             return node.value
         }
 
         @inline(__always)
-        func popTail() -> LRUNode? {
+        func popTail() -> LRUNode<Value>? {
             guard let tail else { return nil }
             removeNode(tail)
             nodes.removeValue(forKey: tail.key)
@@ -82,13 +86,19 @@ final class SelectorResultCache {
 
         @inline(__always)
         func clear() {
+            // Both links are strong. Break the chain before releasing the map
+            // so cached elements are not kept alive by adjacent LRU nodes.
+            for node in nodes.values {
+                node.prev = nil
+                node.next = nil
+            }
             nodes.removeAll(keepingCapacity: true)
             head = nil
             tail = nil
         }
 
         @inline(__always)
-        private func insertAtHead(_ node: LRUNode) {
+        private func insertAtHead(_ node: LRUNode<Value>) {
             node.prev = nil
             node.next = head
             if let head {
@@ -100,14 +110,14 @@ final class SelectorResultCache {
         }
 
         @inline(__always)
-        private func moveToHead(_ node: LRUNode) {
+        private func moveToHead(_ node: LRUNode<Value>) {
             guard head !== node else { return }
             removeNode(node)
             insertAtHead(node)
         }
 
         @inline(__always)
-        private func removeNode(_ node: LRUNode) {
+        private func removeNode(_ node: LRUNode<Value>) {
             let prev = node.prev
             let next = node.next
             if let prev {
@@ -126,9 +136,30 @@ final class SelectorResultCache {
     }
 
     @usableFromInline
-    let probationary: LRUMap
+    typealias LRUMap = Storage<Elements>
+
     @usableFromInline
-    let protected: LRUMap
+    struct Result {
+        let elements: [Element]
+        let includesOwner: Bool
+
+        init(elements: [Element], includesOwner: Bool) {
+            self.elements = elements
+            self.includesOwner = includesOwner
+        }
+
+        func materialize(owner: Element) -> Elements {
+            if includesOwner {
+                return Elements([owner] + elements)
+            }
+            return Elements(elements)
+        }
+    }
+
+    @usableFromInline
+    let probationary: Storage<Result>
+    @usableFromInline
+    let protected: Storage<Result>
     private let doorkeeperCapacity: Int
     private var doorkeeper: Set<String> = []
     private var doorkeeperOrder: [String] = []
@@ -136,15 +167,15 @@ final class SelectorResultCache {
     init(capacity: Int) {
         let protectedCap = max(1, (capacity * 3) / 4)
         let probationaryCap = max(1, capacity - protectedCap)
-        probationary = LRUMap(capacity: probationaryCap)
-        protected = LRUMap(capacity: protectedCap)
+        probationary = Storage(capacity: probationaryCap)
+        protected = Storage(capacity: protectedCap)
         doorkeeperCapacity = max(1, capacity)
         doorkeeper.reserveCapacity(doorkeeperCapacity)
         doorkeeperOrder.reserveCapacity(doorkeeperCapacity)
     }
 
     @inline(__always)
-    func get(_ key: String) -> Elements? {
+    func get(_ key: String) -> Result? {
         if let value = protected.get(key) {
             return value
         }
@@ -158,7 +189,7 @@ final class SelectorResultCache {
     }
 
     @inline(__always)
-    func put(_ key: String, _ value: Elements) {
+    func put(_ key: String, _ value: Result) {
         if protected.contains(key) {
             _ = protected.set(key, value)
             return
@@ -1134,38 +1165,54 @@ open class Element: Node {
      - returns: the next element, or `nil` if there is no next element
      - seealso: ``previousElementSibling()``
      */
-    public func nextElementSibling()throws->Element? {
-        if (parentNode == nil) {return nil}
-        let siblings: Array<Element>? = parent()?.children().array()
-        let index: Int? = try Element.indexInList(self, siblings)
-        try Validate.notNull(obj: index)
-        if let siblings = siblings {
-            if (siblings.count > index!+1) {
-                return siblings[index!+1]
-            } else {
-                return nil
-            }
-        }
-        return nil
+    public func nextElementSibling() throws -> Element? {
+        return try adjacentElementSibling(forward: true)
     }
-    
+
     /**
      Gets the previous element sibling of this element.
      - returns: the previous element, or `nil` if there is no previous element
      - seealso: ``nextElementSibling()``
      */
-    public func previousElementSibling()throws->Element? {
-        if (parentNode == nil) {return nil}
-        let siblings: Array<Element>? = parent()?.children().array()
-        let index: Int? = try Element.indexInList(self, siblings)
-        try Validate.notNull(obj: index)
-        if (index! > 0) {
-            return siblings?[index!-1]
-        } else {
-            return nil
-        }
+    public func previousElementSibling() throws -> Element? {
+        return try adjacentElementSibling(forward: false)
     }
-    
+
+    private func adjacentElementSibling(forward: Bool) throws -> Element? {
+        guard parentNode != nil else { return nil }
+        let parent = parent()
+        try Validate.notNull(obj: parent)
+        let step = forward ? 1 : -1
+        let parentType = type(of: parent!)
+        if parentType != Element.self && parentType != Document.self && parentType != FormElement.self {
+            // Custom subclasses can override children(); preserve that view.
+            let siblings = parent!.children().array()
+            let index = try Element.indexInList(self, siblings)
+            try Validate.notNull(obj: index)
+            let adjacent = index! + step
+            return adjacent >= 0 && adjacent < siblings.count ? siblings[adjacent] : nil
+        }
+
+        let nodes = parent!.childNodes
+        var index = try indexInSiblingNodes(nodes) + step
+        while index >= 0 && index < nodes.count {
+            if let element = nodes[index] as? Element { return element }
+            index += step
+        }
+        return nil
+    }
+
+    private func indexInSiblingNodes(_ nodes: [Node]) throws -> Int {
+        let index = siblingIndex
+        if index >= 0, index < nodes.count, nodes[index] === self {
+            return index
+        }
+        // setSiblingIndex is public; preserve lookup behavior for a stale index.
+        let found = nodes.firstIndex { $0 === self }
+        try Validate.notNull(obj: found)
+        return found!
+    }
+
     /**
      Gets the first element sibling of this element.
      - returns: the first sibling that is an element (aka the parent's first element child)
@@ -2840,8 +2887,8 @@ open class Element: Node {
     }
     
     override public func hash(into hasher: inout Hasher) {
+        // Equality requires node identity; changing the tag must not change the hash.
         super.hash(into: &hasher)
-        hasher.combine(_tag)
     }
 }
 
@@ -2896,6 +2943,24 @@ internal extension Element {
         }
     }
     
+    /// Invalidates all attribute-derived indexes in a single ancestor walk.
+    @usableFromInline
+    @inline(__always)
+    func markAttributeQueryIndexesDirty() {
+        guard !(treeBuilder?.isBulkBuilding ?? false) else { return }
+        var current: Node? = self
+        while let node = current {
+            if let element = node as? Element {
+                element.isClassQueryIndexDirty = true
+                element.isIdQueryIndexDirty = true
+                element.isAttributeQueryIndexDirty = true
+                element.isAttributeValueQueryIndexDirty = true
+                element.invalidateSelectorResultCache()
+            }
+            current = node.parentNode
+        }
+    }
+
     @usableFromInline
     @inline(__always)
     func markClassQueryIndexDirty() {
@@ -2965,12 +3030,11 @@ internal extension Element {
     @inline(__always)
     func cachedSelectorResult(_ query: String) -> Elements? {
         guard let cache = selectorResultCache else { return nil }
-        let root: Node
-        if let cachedRoot = selectorResultCacheRoot, cachedRoot.parentNode == nil {
-            root = cachedRoot
-        } else {
-            root = textMutationRoot()
-            selectorResultCacheRoot = root
+        // Versions belong to a particular tree. A released or reparented root
+        // cannot validate this snapshot, even if the new tree has the same version.
+        guard let root = selectorResultCacheRoot, root.parentNode == nil else {
+            invalidateSelectorResultCache()
+            return nil
         }
         let currentTextVersion = root.textMutationVersion
         if currentTextVersion != selectorResultTextVersion {
@@ -2980,7 +3044,9 @@ internal extension Element {
         }
         if let result = cache.get(query) {
             recordSelectorQuery(query, hit: true)
-            return result
+            // Results are mutable collections. Share their array storage, not the
+            // collection object, so callers cannot modify the cached snapshot.
+            return result.materialize(owner: self)
         }
         recordSelectorQuery(query, hit: false)
         return nil
@@ -2989,6 +3055,13 @@ internal extension Element {
     @usableFromInline
     @inline(__always)
     func storeSelectorResult(_ query: String, _ result: Elements) {
+        // A cached result must not retain its owner. Selectors visit the root
+        // first, so represent that leading element with a marker instead.
+        // Keep custom collections and nonstandard owner placement uncached.
+        guard type(of: result) == Elements.self else { return }
+        let elements = result.array()
+        let includesOwner = elements.first === self
+        guard !elements.dropFirst(includesOwner ? 1 : 0).contains(where: { $0 === self }) else { return }
         let hadCache = selectorResultCache != nil
         if selectorResultCache == nil {
             selectorResultCache = SelectorResultCache(capacity: Element.selectorResultCacheCapacity)
@@ -3011,7 +3084,10 @@ internal extension Element {
             selectorCacheBypassRemaining &-= 1
             return
         }
-        selectorResultCache?.put(query, result)
+        selectorResultCache?.put(query, SelectorResultCache.Result(
+            elements: includesOwner ? Array(elements.dropFirst()) : elements,
+            includesOwner: includesOwner
+        ))
     }
 
     @usableFromInline
@@ -3254,9 +3330,7 @@ internal extension Element {
                         if needsHotAttributes,
                            (Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false)) {
                             let value = attr.lowerTrimmedValueSlice()
-                            var valueIndex = hotAttributeIndex[key] ?? [:]
-                            valueIndex[value, default: []].append(Weak(element))
-                            hotAttributeIndex[key] = valueIndex
+                            hotAttributeIndex[key, default: [:]][value, default: []].append(Weak(element))
                         }
                     }
                 }
@@ -3510,9 +3584,7 @@ internal extension Element {
                     let key = lowerKeys ? attr.lowerKeySlice() : keySlice
                     guard Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false) else { continue }
                     let value = attr.lowerTrimmedValueSlice()
-                    var valueIndex = newIndex[key] ?? [:]
-                    valueIndex[value, default: []].append(Weak(element))
-                    newIndex[key] = valueIndex
+                    newIndex[key, default: [:]][value, default: []].append(Weak(element))
                 }
             }
         }

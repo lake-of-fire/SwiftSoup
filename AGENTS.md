@@ -3,6 +3,26 @@
 This repo’s current performance harness is the `BenchmarkProfileTest/testParseBenchmarkProfile` test. It is driven by
 environment variables and runs in a release test build.
 
+## Optional mise shortcuts (macOS/Linux)
+The tasks use your existing Swift toolchain and do not install tools:
+```
+mise run test:release
+mise run bench
+SWIFTSOUP_BENCHMARK_ITERATIONS=100 mise run bench
+SWIFTSOUP_BENCHMARK_SET=attribute-heavy mise run bench
+```
+`bench` defaults to `base,large`, two in-process warmups, and ten measured iterations.
+Existing `SWIFTSOUP_BENCHMARK_*` environment overrides are preserved. Increase the
+iteration count for measurements; these modest defaults are only a starting point.
+The direct SwiftPM commands below remain supported without mise.
+
+Compare the benchmark's elapsed-time line, not build or task wall time. The default
+workload includes Data and String parsing plus selector/text operations; it is not a
+parse-only measurement. Record `swift --version` and any local source changes with
+results. Repeat runs with alternating baseline/candidate order, run an unchanged
+A/A comparison to estimate noise, and validate behavior with regression tests before
+interpreting an improvement. Keep profiling runs separate from timing runs.
+
 ## A/B comparison rules
 - Always compare release builds on the same machine.
 - If an optimization has a flag: run OFF vs ON.
@@ -21,7 +41,7 @@ environment variables and runs in a release test build.
 - `SWIFTSOUP_BENCHMARK_SELECTOR_REPEAT=1`
 - `SWIFTSOUP_BENCHMARK_SELECTOR_STRESS_REPEAT=1`
 - `SWIFTSOUP_BENCHMARK_ATTRIBUTE_SELECTOR_STRESS_REPEAT=1`
-- `SWIFTSOUP_BENCHMARK_SERIALIZER=source-patched|current-tree|body-splice`
+- `SWIFTSOUP_BENCHMARK_SERIALIZER=source-patched|without-source-reuse|reuse-source-outside-body`
 - `SWIFTSOUP_BENCHMARK_DENSE_BODY_MUTATIONS=1`
 
 ## Regression suite (broad coverage)
@@ -57,7 +77,7 @@ swift test -c release --filter BenchmarkProfileTest/testParseBenchmarkProfile
 ## Serializer A/B
 For Reader-style dense body mutation, run the same release benchmark once per serializer:
 ```
-for serializer in source-patched current-tree body-splice; do
+for serializer in source-patched without-source-reuse reuse-source-outside-body; do
   SWIFTSOUP_BENCHMARK=1 \
   SWIFTSOUP_BENCHMARK_SET=manabi-reader \
   SWIFTSOUP_BENCHMARK_MANABI_REPEAT=40 \

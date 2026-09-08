@@ -648,7 +648,10 @@ open class Token {
         func ensureAttributes() {
             guard let pendingAttributes = _pendingAttributes, !pendingAttributes.isEmpty else { return }
             if _attributes == nil {
-                _attributes = Attributes()
+                _attributes = Attributes(pendingAttributes: pendingAttributes)
+                // The collection now owns the buffer; do not copy it just to clear the token.
+                _pendingAttributes = nil
+                return
             }
             for pending in pendingAttributes {
                 _attributes?.appendPending(pending)

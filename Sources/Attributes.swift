@@ -61,10 +61,7 @@ open class Attributes: NSCopying {
     var attributes: [Attribute] = [] {
         @inline(__always)
         didSet {
-            ownerElement?.markClassQueryIndexDirty()
-            ownerElement?.markIdQueryIndexDirty()
-            ownerElement?.markAttributeQueryIndexDirty()
-            ownerElement?.markAttributeValueQueryIndexDirty()
+            ownerElement?.markAttributeQueryIndexesDirty()
             ownerElement?.markSourceDirty()
             invalidateLowercasedKeysCache()
             invalidateKeyIndex()
@@ -107,6 +104,13 @@ open class Attributes: NSCopying {
     private init(copying attributes: [Attribute], hasUppercaseKeys: Bool) {
         self.attributes = attributes
         self.hasUppercaseKeys = hasUppercaseKeys
+    }
+
+    /// Adopts a token's deferred attributes before an element owns this collection.
+    internal init(pendingAttributes: [PendingAttribute]) {
+        self.pendingAttributes = pendingAttributes
+        pendingAttributesCount = pendingAttributes.count
+        hasUppercaseKeys = pendingAttributes.contains { $0.hasUppercase }
     }
 
     /// Materializes a deferred attribute, throwing if the key fails validation (e.g. an
@@ -170,10 +174,7 @@ open class Attributes: NSCopying {
         }
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
-        ownerElement?.markClassQueryIndexDirty()
-        ownerElement?.markIdQueryIndexDirty()
-        ownerElement?.markAttributeQueryIndexDirty()
-        ownerElement?.markAttributeValueQueryIndexDirty()
+        ownerElement?.markAttributeQueryIndexesDirty()
         ownerElement?.markSourceDirty()
     }
 
@@ -183,7 +184,7 @@ open class Attributes: NSCopying {
         guard let pending = pendingAttributes, !pending.isEmpty else { return }
         DebugTrace.log("Attributes.ensureMaterialized: pending=\(pending.count)")
         pendingAttributesCount = 0
-        let shouldIndex = shouldBuildKeyIndex()
+        let shouldIndex = attributes.count + pending.count >= Self.keyIndexThreshold
         var localIndex: [ByteSlice: Int]? = nil
         if shouldIndex {
             if !keyIndexDirty, let existing = keyIndex {
@@ -196,9 +197,10 @@ open class Attributes: NSCopying {
                 }
             }
         }
-        var touchedClass = false
-        var touchedId = false
-        attributes.reserveCapacity(attributes.count + pending.count)
+        // Build locally so the array observer invalidates owner indexes once,
+        // rather than once for every appended or replaced attribute.
+        var materialized = attributes
+        materialized.reserveCapacity(materialized.count + pending.count)
         for pendingAttr in pending {
             if let nameBytes = pendingAttr.nameBytes {
                 DebugTrace.log("Attributes.ensureMaterialized: nameBytes=\(String(decoding: nameBytes, as: UTF8.self))")
@@ -223,42 +225,24 @@ open class Attributes: NSCopying {
             if Attributes.containsAsciiUppercase(keyForIndex) {
                 hasUppercaseKeys = true
             }
-            let normalizedKey = Attributes.containsAsciiUppercase(keyForIndex) ? keyForIndex.lowercased() : keyForIndex
-            if equalsSlice(normalizedKey, UTF8Arrays.class_) {
-                touchedClass = true
-            }
-            if equalsSlice(normalizedKey, SwiftSoup.Element.idString) {
-                touchedId = true
-            }
             if let index = localIndex?[keyForIndex] {
-                attributes[index] = attribute
+                materialized[index] = attribute
             } else if shouldIndex {
-                localIndex?[keyForIndex] = attributes.count
-                attributes.append(attribute)
-            } else if let index = attributes.firstIndex(where: { $0.keySlice == keyForIndex }) {
-                attributes[index] = attribute
+                localIndex?[keyForIndex] = materialized.count
+                materialized.append(attribute)
+            } else if let index = materialized.firstIndex(where: { $0.keySlice == keyForIndex }) {
+                materialized[index] = attribute
             } else {
-                attributes.append(attribute)
+                materialized.append(attribute)
             }
         }
+        attributes = materialized
         if let localIndex {
             keyIndex = localIndex
             keyIndexDirty = false
         } else {
             keyIndexDirty = true
         }
-        lowercasedKeyIndexDirty = true
-        lowercasedKeyIndex = nil
-        lowercasedKeysCache = nil
-        if touchedClass {
-            ownerElement?.markClassQueryIndexDirty()
-        }
-        if touchedId {
-            ownerElement?.markIdQueryIndexDirty()
-        }
-        ownerElement?.markAttributeQueryIndexDirty()
-        ownerElement?.markAttributeValueQueryIndexDirty()
-        ownerElement?.markSourceDirty()
         pendingAttributes?.removeAll(keepingCapacity: true)
     }
 
@@ -1277,10 +1261,7 @@ open class Attributes: NSCopying {
         hasUppercaseKeys = false
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
-        ownerElement?.markClassQueryIndexDirty()
-        ownerElement?.markIdQueryIndexDirty()
-        ownerElement?.markAttributeQueryIndexDirty()
-        ownerElement?.markAttributeValueQueryIndexDirty()
+        ownerElement?.markAttributeQueryIndexesDirty()
         ownerElement?.markSourceDirty()
     }
     
@@ -1314,12 +1295,9 @@ open class Attributes: NSCopying {
 
     @inline(__always)
     internal static func containsAsciiUppercase(_ key: ByteSlice) -> Bool {
-        for b in key {
-            if b >= 65 && b <= 90 {
-                return true
-            }
+        return key.withUnsafeBytes { bytes in
+            bytes.contains { $0 >= 65 && $0 <= 90 }
         }
-        return false
     }
     
 }
