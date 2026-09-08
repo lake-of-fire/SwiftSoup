@@ -1,0 +1,62 @@
+name: CSS review five verified publication
+on:
+  push:
+    branches: [review/css-attribute-ownership-publication-20260908]
+    paths: [.github/workflows/css-review5-publication.yml]
+permissions:
+  contents: write
+jobs:
+  publish-blobs:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 2c6eb017fbc6f7135571de07252a6a603ee287e6
+          persist-credentials: false
+      - name: Verify patch and tree before uploading source blobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, gzip, hashlib, json, os, pathlib, subprocess, urllib.request
+          api = 'https://api.github.com/repos/lake-of-fire/SwiftSoup/git/blobs'
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          parts = ['aa37035aeccbd4918bb02901e2a56859893af3f5', '79510568f6ef29d17df3a3554e5dac3764897d62', '7f6a99f15657e07c8ba355a93f79a9e49c130b22', '608df8ce7ac3c0f25a63b215974b844a49a5eb18']
+          data = bytearray()
+          for sha in parts:
+              request = urllib.request.Request(api + '/' + sha, headers=headers)
+              with urllib.request.urlopen(request) as response:
+                  blob = json.load(response)
+              assert blob['encoding'] == 'base64'
+              chunk = base64.b64decode(blob['content'])
+              assert hashlib.sha1(b'blob ' + str(len(chunk)).encode() + b'\0' + chunk).hexdigest() == sha
+              data.extend(chunk)
+          assert hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest() == '87a466455dadd6456c866c30395d954b01224958'
+          patch = gzip.decompress(data)
+          assert hashlib.sha256(patch).hexdigest() == '76bd78afcfb95c850879c908183c950c632a3136fcd6fcc92110ccd2c192ddb4'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == '2c6eb017fbc6f7135571de07252a6a603ee287e6'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip() == 'ad29b90f9d1db9f1cfa0106100cf4713a961f4f2'
+          pathlib.Path('/tmp/review5.patch').write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', '/tmp/review5.patch'], check=True)
+          subprocess.run(['git', 'apply', '/tmp/review5.patch'], check=True)
+          paths = ['CHANGELOG.md', 'Sources/Attribute.swift', 'Sources/Attributes.swift', 'Sources/DataNode.swift', 'Sources/Element.swift', 'Sources/Node.swift', 'Sources/TextNode.swift', 'Sources/Tokeniser.swift', 'Sources/TokeniserState.swift', 'Tests/SwiftSoupTests/AttributeOwnershipTest.swift', 'Tests/SwiftSoupTests/CssDirectAttributeMutationTest.swift', 'Tests/SwiftSoupTests/NodeAttributeOwnershipTest.swift']
+          subprocess.run(['git', 'add', '--'] + paths, check=True)
+          tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert tree == '4bfd5805b19f26c84036026db254135a1c93260f', tree
+          entries = []
+          for path in paths:
+              content = pathlib.Path(path).read_bytes()
+              expected = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\0' + content).hexdigest()
+              payload = json.dumps({'content': base64.b64encode(content).decode(), 'encoding': 'base64'}).encode()
+              request = urllib.request.Request(api, data=payload, method='POST', headers=headers)
+              with urllib.request.urlopen(request) as response:
+                  actual = json.load(response)['sha']
+              assert actual == expected, (path, expected, actual)
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': actual})
+          manifest = {'base': '2c6eb017fbc6f7135571de07252a6a603ee287e6', 'tree': tree, 'entries': entries}
+          print('VERIFIED_SOURCE_BLOBS=' + json.dumps(manifest))
+          pathlib.Path('/tmp/review5-source-blobs.json').write_text(json.dumps(manifest, indent=2))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: css-review5-verified-source-blobs
+          path: /tmp/review5-source-blobs.json
