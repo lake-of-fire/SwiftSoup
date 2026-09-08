@@ -124,4 +124,21 @@ final class CssSelectorUnicodeRegressionTest: XCTestCase {
         }
         XCTAssertEqual(try doc.select("section:has(p.ab)").size(), 2)
     }
+
+    func testDecodedClassWhitespaceIsNotTrimmed() throws {
+        let doc = try SwiftSoup.parse("<main><p class='ab'>plain</p><p>unicode</p></main>")
+        let target = try doc.select("p").get(1)
+        for (escape, scalar) in [(#"\a0 "#, "\u{A0}"), (#"\2003 "#, "\u{2003}")] {
+            for (identifier, encoded) in [(scalar + "ab", escape + "ab"), ("ab" + scalar, "ab" + escape)] {
+                try target.attr("class", identifier)
+                for prefix in [".", "p.", "main > ."] {
+                    try assertSelects(doc, prefix + encoded, target)
+                }
+            }
+        }
+        // An escaped CSS space is identifier content, not removable query padding.
+        for query in [#".\20 ab"#, #".ab\20 "#, #"main > .\20 ab"#] {
+            XCTAssertTrue(try doc.select(query).isEmpty(), query)
+        }
+    }
 }

@@ -201,7 +201,8 @@ public class QueryParser {
     private func byClass() throws {
         let className: String = tq.consumeCssIdentifier()
         try Validate.notEmpty(string: className)
-        evals.append(Evaluator.Class(className.trim()))
+        // Whitespace decoded from an escape is identifier content, not query padding.
+        evals.append(Evaluator.Class(className))
     }
 
     private func byTag() throws {
