@@ -104,6 +104,11 @@ open class Attributes: NSCopying {
         attributes.reserveCapacity(16)
     }
 
+    private init(copying attributes: [Attribute], hasUppercaseKeys: Bool) {
+        self.attributes = attributes
+        self.hasUppercaseKeys = hasUppercaseKeys
+    }
+
     /// Materializes a deferred attribute, throwing if the key fails validation (e.g. an
     /// empty-after-trim key). Callers invoke this via `try?` and drop anything that fails,
     /// matching jsoup — never trapping. See #392.
@@ -1282,15 +1287,7 @@ open class Attributes: NSCopying {
     @inline(__always)
     public func copy(with zone: NSZone? = nil) -> Any {
         ensureMaterialized()
-        let clone = Attributes()
-        clone.attributes = attributes
-        clone.hasUppercaseKeys = hasUppercaseKeys
-        clone.lowercasedKeysCache = nil
-        clone.lowercasedKeyIndex = nil
-        clone.lowercasedKeyIndexDirty = true
-        clone.keyIndex = nil
-        clone.keyIndexDirty = true
-        return clone
+        return Attributes(copying: attributes, hasUppercaseKeys: hasUppercaseKeys)
     }
     
     @inline(__always)
