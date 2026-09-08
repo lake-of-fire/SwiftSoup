@@ -3,6 +3,9 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Preserve value and regex predicates when an attribute-presence index seeds a compound selector. Presence alone does not prove a prefix, suffix, substring, or regex match. Keep exact-index shortcuts and check single-predicate `And` evaluators consistently.
+* Resolve virtual `abs:` attribute presence through `hasAttr`, not the physical attribute-name index, and invalidate affected ancestor/subtree selector results when the base URI changes. Physical attribute indexes and text caches remain intact.
+* Route unescaped punctuation in bare ID selectors through the parser, matching compound-selector validation. Literal punctuation in an ID must be escaped (for example `#x\]` for ID `x]`) or supplied through `getElementById`.
 * Treat `getElementById` arguments as literal IDs, retaining leading/trailing whitespace. Callers that intentionally accepted padded input must now trim it themselves. Recognize form feed as a descendant combinator rather than an ID byte in the selector fast path.
 * Preserve escaped trailing spaces and non-ASCII identifier content while removing CSS query padding, including direct parser and multi-root selection paths.
 * Scan balanced and compound selectors at code-point boundaries; handle backslash parity and paired quote delimiters correctly. Unicode prepend characters no longer absorb closing parentheses or combinators. The public balanced scanner still supports multi-scalar delimiters.

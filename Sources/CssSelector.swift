@@ -809,41 +809,18 @@ open class CssSelector {
             if id.isEmpty {
                 return .none
             }
-            var asciiOnly = true
+            // Only literal identifier bytes are safe here. Escapes and syntax
+            // must use the same parser as compound selectors, even when the
+            // document contains an ID equal to the unparsed query text.
             var bytes: [UInt8] = []
-            bytes.reserveCapacity(id.count)
-            for b in id.utf8 {
-                bytes.append(b)
-                if b >= TokeniserStateVars.asciiUpperLimitByte {
-                    asciiOnly = false
-                    continue
-                }
-                switch b {
-                case TokeniserStateVars.spaceByte,
-                     TokeniserStateVars.tabByte,
-                     TokeniserStateVars.newLineByte,
-                     TokeniserStateVars.formFeedByte,
-                     TokeniserStateVars.carriageReturnByte,
-                     TokeniserStateVars.commaByte,
-                     TokeniserStateVars.greaterThanByte,
-                     TokeniserStateVars.plusByte,
-                     TokeniserStateVars.tildeByte,
-                     TokeniserStateVars.colonByte,
-                     TokeniserStateVars.dotByte,
-                     TokeniserStateVars.leftBracketByte,
-                     TokeniserStateVars.hashByte,
-                     // Escapes are decoded by TokenQueue.consumeCssIdentifier, not here.
-                     TokeniserStateVars.backslashByte:
-                    return .none
-                default:
-                    break
-                }
+            bytes.reserveCapacity(id.utf8.count)
+            for byte in id.utf8 {
+                guard byte >= 0x80 || byte == 0x2D || byte == 0x5F ||
+                    (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) ||
+                    (0x61...0x7A).contains(byte) else { return .none }
+                bytes.append(byte)
             }
-            let idBytes = asciiOnly ? bytes : bytes.trim()
-            if !idBytes.isEmpty {
-                return .id(idBytes)
-            }
-            return .none
+            return .id(bytes)
         }
         if trimmed.first == "." {
             let className = trimmed.dropFirst()

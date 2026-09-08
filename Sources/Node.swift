@@ -359,10 +359,18 @@ open class Node: Equatable, Hashable {
             
             func head(_ node: Node, _ depth: Int) throws {
                 node.baseUri = baseUri
+                (node as? Element)?.invalidateSelectorResultCache()
             }
             
             func tail(_ node: Node, _ depth: Int) throws {
             }
+        }
+        // Resolved-URL selectors may be cached on any subtree or ancestor.
+        // Physical attribute indexes and text caches do not depend on base URI.
+        var ancestor = parentNode
+        while let node = ancestor {
+            (node as? Element)?.invalidateSelectorResultCache()
+            ancestor = node.parentNode
         }
         try traverse(nodeVisitor(baseUri))
     }

@@ -1471,6 +1471,15 @@ open class Element: Node {
         if key.isEmpty {
             return Elements()
         }
+        if key.starts(with: UTF8Arrays.absPrefix) {
+            // abs: attributes are computed from the base URI; the physical
+            // attribute-name index cannot determine whether they exist.
+            let elements = Elements()
+            traverseElementsDepthFirst { element in
+                if element.hasAttr(key) { elements.add(element) }
+            }
+            return elements
+        }
         if isAttributeQueryIndexDirty || normalizedAttributeNameIndex == nil {
             rebuildQueryIndexesForAllAttributes()
             isAttributeQueryIndexDirty = false
