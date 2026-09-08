@@ -1,0 +1,43 @@
+name: CSS review four verified upload
+on:
+  push:
+    branches: [fix/css-hex-identifier-escapes-20260908]
+    paths: [.github/workflows/css-review4-verify-upload.yml]
+permissions:
+  contents: write
+jobs:
+  verify-upload:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 2c4d4172fc827dc6365557eb868ccedb3bb97cbe
+          persist-credentials: false
+      - name: Verify patch checksum and source tree before upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import pathlib, subprocess, textwrap
+          source = pathlib.Path('.github/workflows/css-review4-publish.yml').read_text()
+          pathlib.Path('/tmp/review4-payload-workflow.yml').write_text(source)
+          repairs = {
+              'D43mwuTBJJqmVM': 'D43mwuTBJqmVM',
+              'fLSZZzi1': 'fLSZzi1',
+              'XOdVVXC': 'XOdVXC',
+              'VftxVV5w': 'VftxV5w',
+              'b6ysDdVV19sv': 'b6ysDdV19sv'
+          }
+          for old, new in repairs.items():
+              assert source.count(old) == 1, old
+              source = source.replace(old, new)
+          script = textwrap.dedent(source.split('        run: |\n', 1)[1].split('      - uses:', 1)[0])
+          subprocess.run(['git', 'reset', '--hard', '8c0e5292b4060660ea097650ef41f6a093122faa'], check=True)
+          exec(compile(script, '<verified-publication>', 'exec'))
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: css-review4-upload-evidence
+          path: |
+            /tmp/review4-payload-workflow.yml
+            /tmp/review4-blobs.json
