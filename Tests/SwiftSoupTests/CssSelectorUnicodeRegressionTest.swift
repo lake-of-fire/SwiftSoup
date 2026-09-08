@@ -39,15 +39,15 @@ final class CssSelectorUnicodeRegressionTest: XCTestCase {
         let cache = SelectorResultCache(capacity: 8)
         let doc = try SwiftSoup.parse("<p>first</p><p>second</p>")
         let targets = try doc.select("p")
-        let a = Elements([targets.get(0)])
-        let b = Elements([targets.get(1)])
+        let a = SelectorResultCache.Result(elements: [targets.get(0)], includesOwner: false)
+        let b = SelectorResultCache.Result(elements: [targets.get(1)], includesOwner: false)
         for _ in 0..<4 {
             cache.put("#result-é", a)
             cache.put("#result-e\u{301}", b)
             // First insertion is only admitted to the doorkeeper.
         }
-        XCTAssertTrue(cache.get("#result-é")?.first() === targets.get(0))
-        XCTAssertTrue(cache.get("#result-e\u{301}")?.first() === targets.get(1))
+        XCTAssertTrue(cache.get("#result-é")?.elements.first === targets.get(0))
+        XCTAssertTrue(cache.get("#result-e\u{301}")?.elements.first === targets.get(1))
     }
 
     func testUnicodeIdsAcrossAllSelectionCaches() throws {

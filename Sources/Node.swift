@@ -207,7 +207,7 @@ open class Node: Equatable, Hashable {
     /**
      Get an attribute's value by its key. **Case insensitive.**
      
-     To get an absolute URL from an attribute that may be a relative URL, prefix the key with `abs`,
+     To get an absolute URL from an attribute that may be relative to the element's base URI, prefix the key with `abs`,
      which is a shortcut to the ``absUrl(_:)-(String)`` method.
      
      E.g.:
@@ -313,7 +313,7 @@ open class Node: Equatable, Hashable {
     /**
      Remove an attribute from this element.
      - parameter attributeKey: The attribute to remove.
-     - returns: this (for chaining)
+     - returns: this node, for chaining
      */
     @discardableResult
     open func removeAttr(_ attributeKey: [UInt8]) throws -> Node {
@@ -409,8 +409,8 @@ open class Node: Equatable, Hashable {
     /**
      Get a child node by its 0-based index.
      - parameter index: index of child node
-     - returns: the child node at this index.
      - warning: Crashes if the index is out of bounds!
+     - returns: the child node at this index.
      */
     @inline(__always)
     open func childNode(_ index: Int) -> Node {
@@ -480,13 +480,10 @@ open class Node: Equatable, Hashable {
      */
     @inline(__always)
     open func ownerDocument() -> Document? {
-        if let this =  self as? Document {
-            return this
-        } else if (parentNode == nil) {
-            return nil
-        } else {
-            return parentNode!.ownerDocument()
+        if let document = self as? Document {
+            return document
         }
+        return parentNode?.ownerDocument()
     }
 
     /// A token that changes when text content in this node's tree mutates.
@@ -1033,7 +1030,7 @@ open class Node: Equatable, Hashable {
     
     // if this node has no document (or parent), retrieve the default output settings
     func getOutputSettings() -> OutputSettings {
-        return ownerDocument() != nil ? ownerDocument()!.outputSettings() : (Document([])).outputSettings()
+        return ownerDocument()?.outputSettings() ?? OutputSettings()
     }
     
     /**
@@ -1335,8 +1332,7 @@ open class Node: Equatable, Hashable {
     /// your program. Do not save hash values to use during a future execution.
     @inline(__always)
     public func hash(into hasher: inout Hasher) {
-        hasher.combine(description)
-        hasher.combine(baseUri)
+        hasher.combine(ObjectIdentifier(self))
     }
 }
 
