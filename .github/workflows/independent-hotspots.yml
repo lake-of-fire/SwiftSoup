@@ -1,0 +1,31 @@
+name: Independent hotspot source snapshots
+on:
+  push:
+    branches: [review/independent-hotspots-20260909]
+    paths: [.github/workflows/independent-hotspots.yml]
+permissions:
+  contents: read
+jobs:
+  snapshots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Export exact immutable source revisions
+        run: |
+          mkdir snapshots
+          git archive c9c37c80eb571aabba59a1f3ef31af9b072af4a8 | gzip > snapshots/integration.tar.gz
+          git archive cb57c9e160da093c7dd87eb91d335b6891d0efb7 | gzip > snapshots/master.tar.gz
+          git archive 20a0cd78157cc958f52656295fd54dcf08f043ab | gzip > snapshots/correctness-stack.tar.gz
+          git archive 2d83721fee3ccbe3117a63d231ac6b9b3b195c8b | gzip > snapshots/whitespace-stack.tar.gz
+          git for-each-ref --format='%(refname) %(objectname)' refs/remotes/ > snapshots/refs.txt
+          for ref in c9c37c80eb571aabba59a1f3ef31af9b072af4a8 cb57c9e160da093c7dd87eb91d335b6891d0efb7; do
+            git ls-tree -r "$ref" > "snapshots/$ref.tree"
+          done
+          sha256sum snapshots/* > snapshots/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: independent-hotspot-snapshots
+          path: snapshots/
+          retention-days: 7
