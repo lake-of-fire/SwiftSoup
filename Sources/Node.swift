@@ -295,7 +295,7 @@ open class Node: Equatable, Hashable {
         guard let attributes = attributes else {
             return false
         }
-        if attributeKey.starts(with: Node.abs) {
+        if Node.hasAbsPrefix(attributeKey) {
             let key = ArraySlice(attributeKey.dropFirst(Node.absCount))
             do {
                 let abs = try absUrl(key)
@@ -303,7 +303,8 @@ open class Node: Equatable, Hashable {
                     return true
                 }
             } catch {
-                return false
+                // Invalid virtual suffixes must not hide a physical attribute
+                // with the complete name (for example a literal "abs:").
             }
             
         }
