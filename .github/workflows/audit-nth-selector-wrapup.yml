@@ -1,0 +1,90 @@
+name: Audit nth-selector wrap-up
+on:
+  push:
+    branches: [audit/nth-selector-wrapup-20260909]
+    paths: [.github/workflows/audit-nth-selector-wrapup.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      source: ${{ steps.publish.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: publish
+        name: Reconstruct exact source-only commit without audit ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, lzma, os
+          from pathlib import Path
+          payload = Path('audit-nth-selectors.patch.xz.b64').read_bytes()
+          assert hashlib.sha256(payload).hexdigest() == 'b10fb4561c0b5981213b162ef2cf303c8e407c39fa74e355365bdf77d035b914'
+          patch = lzma.decompress(base64.b64decode(payload.strip(), validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '0f79e058f7364783e478f9732575bf546541db05163b0c2f9bf3ac53bee2d7ae'
+          Path(os.environ['RUNNER_TEMP'], 'nth.patch').write_bytes(patch)
+          PY
+          git worktree add --detach "$RUNNER_TEMP/product" f3c7052d8614e0d7a1d6ced70351a8eb68392499
+          cd "$RUNNER_TEMP/product"
+          git apply --index "$RUNNER_TEMP/nth.patch"
+          git diff --cached --check
+          test "$(git write-tree)" = 9e34d25497da2caaf58a19616582ef54ee204d7c
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 4
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          branch=fix/nth-selector-boundaries-20260909
+          if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+            commit=$(git rev-parse "refs/remotes/origin/$branch")
+            test "$(git rev-parse "$commit^{tree}")" = 9e34d25497da2caaf58a19616582ef54ee204d7c
+            test "$(git rev-parse "$commit^")" = f3c7052d8614e0d7a1d6ced70351a8eb68392499
+          else
+            commit=$(git commit-tree 9e34d25497da2caaf58a19616582ef54ee204d7c -p f3c7052d8614e0d7a1d6ced70351a8eb68392499 -m 'Fix nth-selector parsing and overflow without changing zero-based index semantics')
+            git push origin "$commit:refs/heads/$branch"
+          fi
+          echo "source=$commit" >> "$GITHUB_OUTPUT"
+          git show -s --format='%H %T %P' "$commit"
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      EXPECTED_SOURCE: ${{ needs.prepare.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source }}
+          persist-credentials: false
+      - name: Test exact committed source in debug, release and AddressSanitizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          test "$(git rev-parse 'HEAD^{tree}')" = 9e34d25497da2caaf58a19616582ef54ee204d7c
+          git show -s --format='%H %T %P' > "$RUNNER_TEMP/evidence/source.txt"
+          swift --version > "$RUNNER_TEMP/evidence/compiler.txt"
+          swift test -j 4 > "$RUNNER_TEMP/evidence/debug.log" 2>&1
+          swift test -j 4 -c release > "$RUNNER_TEMP/evidence/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$RUNNER_TEMP/evidence/asan.log" 2>&1
+          for mode in debug release asan; do
+            grep 'Executed 1171 tests, with 17 tests skipped and 0 failures' "$RUNNER_TEMP/evidence/$mode.log"
+          done
+          status=$(git status --porcelain)
+          test -z "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nth-selector-${{ matrix.os }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 30
+          if-no-files-found: warn
