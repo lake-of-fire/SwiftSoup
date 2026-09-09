@@ -173,13 +173,23 @@ public class OrderedSet<T: Hashable> {
 
 	/**
 	Tests if the ordered set is a subset of another sequence.
-	The input is consumed at most once and stops when all members are found.
-	Temporary membership storage is bounded by the receiver count.
+	Collections retain their membership checks; other sequences are consumed
+	at most once and stop when all members are found. Empty receivers do not
+	consume the input. Temporary storage is bounded by the receiver count.
 	- parameter    sequence:   The sequence to check.
 	- returns:                 true if the sequence contains all objects contained in the receiver, otherwise false.
 	*/
 	public func isSubset<S: Sequence>(of sequence: S) -> Bool where S.Iterator.Element == T {
 		guard !contents.isEmpty else { return true }
+		// Collections are restartable and may answer contains without scanning
+		// (notably Set and Range). A singleton needs only one membership query,
+		// even for a single-pass Sequence, and needs no temporary membership set.
+		if contents.count == 1 || sequence is any Collection {
+			for object in contents.keys {
+				if !sequence.contains(object) { return false }
+			}
+			return true
+		}
 		// Sequence need not be restartable. Track required members while
 		// consuming a single iterator, without retaining the input's tail.
 		var remaining = Set(contents.keys)
