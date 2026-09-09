@@ -10,9 +10,11 @@ import Foundation
 public struct Pattern: Sendable {
     public static let CASE_INSENSITIVE: Int = 0x02
     let pattern: String
+    private let compiled: Result<NSRegularExpression, Error>
 
     init(_ pattern: String) {
         self.pattern = pattern
+        compiled = Result { try NSRegularExpression(pattern: pattern, options: []) }
     }
 
     static public func compile(_ s: String) -> Pattern {
@@ -23,12 +25,12 @@ public struct Pattern: Sendable {
     }
 
     public func validate() throws {
-         _ = try NSRegularExpression(pattern: self.pattern, options: [])
+        _ = try compiled.get()
     }
 
     public func matcher(in text: String) -> Matcher {
         do {
-            let regex = try NSRegularExpression(pattern: self.pattern, options: [])
+            let regex = try compiled.get()
             let nsString = NSString(string: text)
             let results = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsString.length))
 
