@@ -1,0 +1,73 @@
+name: Ordered-set generic boundary exact readback
+on:
+  push:
+    branches: [audit/ordered-set-handoff-v2-20260909]
+    paths: [.github/workflows/ordered-set-generic-readback.yml]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: swift:6.1
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 8444931894c24127fedc651fef0b71e419805fe3
+          persist-credentials: false
+      - name: Immutable source full Linux suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          E="$RUNNER_TEMP/generic-linux"
+          mkdir -p "$E"
+          git rev-parse HEAD HEAD^{tree} > "$E/identity.txt"
+          test "$(git rev-parse HEAD)" = 8444931894c24127fedc651fef0b71e419805fe3
+          test "$(git rev-parse HEAD^{tree})" = affe2ec613b60bbb0dc2bdfce245797f71d2944a
+          git ls-tree -r HEAD > "$E/tree.txt"
+          swift --version > "$E/toolchain.txt"
+          swift test -j 4 > "$E/debug.log" 2>&1
+          swift test -j 4 -c release > "$E/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$E/asan.log" 2>&1
+          git status --porcelain --untracked-files=all > "$E/status.txt"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ordered-set-generic-linux
+          path: ${{ runner.temp }}/generic-linux
+          if-no-files-found: error
+          retention-days: 30
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 8444931894c24127fedc651fef0b71e419805fe3
+          persist-credentials: false
+      - name: Immutable source full Apple suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/generic-macos"
+          mkdir -p "$E"
+          git rev-parse HEAD HEAD^{tree} > "$E/identity.txt"
+          test "$(git rev-parse HEAD)" = 8444931894c24127fedc651fef0b71e419805fe3
+          test "$(git rev-parse HEAD^{tree})" = affe2ec613b60bbb0dc2bdfce245797f71d2944a
+          git ls-tree -r HEAD > "$E/tree.txt"
+          swift --version > "$E/toolchain.txt"
+          xcodebuild -version > "$E/xcode.txt"
+          swift test -j 4 > "$E/debug.log" 2>&1
+          swift test -j 4 -c release > "$E/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$E/asan.log" 2>&1
+          git status --porcelain --untracked-files=all > "$E/status.txt"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ordered-set-generic-macos
+          path: ${{ runner.temp }}/generic-macos
+          if-no-files-found: error
+          retention-days: 30
