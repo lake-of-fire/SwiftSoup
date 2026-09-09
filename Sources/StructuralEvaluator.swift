@@ -89,17 +89,17 @@ public class StructuralEvaluator: Evaluator, @unchecked Sendable {
             }
 
             var parent = element.parent()
-            while (true) {
+            while let current = parent {
                 do {
-                    if let p = parent, try evaluator.matches(root, p) {
+                    if try evaluator.matches(root, current) {
                         return true
                     }
                 } catch {}
 
-                if (parent == root) {
+                if current == root {
                     break
                 }
-                parent = parent?.parent()
+                parent = current.parent()
             }
             return false
         }
