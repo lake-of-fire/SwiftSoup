@@ -1,0 +1,73 @@
+name: Validate isolated collection optimizations
+on:
+  push:
+    branches: [review/independent-hotspots-20260909]
+    paths: [.github/workflows/independent-collection-publication.yml]
+permissions:
+  contents: write
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [exclusion, ordered]
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    env:
+      CANDIDATE: ${{ matrix.candidate }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install reconstruction interpreter
+        run: apt-get update -qq && apt-get install -y -qq python3
+      - name: Reconstruct exact source-only candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p /tmp/next-hotspot-input /tmp/next-hotspot-evidence
+          cp Study/NextHotspots/*.swift Study/NextHotspots/prepare.py /tmp/next-hotspot-input/
+          git checkout --detach f3c7052d8614e0d7a1d6ced70351a8eb68392499
+          python3 /tmp/next-hotspot-input/prepare.py
+          git diff --cached --binary > /tmp/next-hotspot-evidence/candidate.patch
+          swift --version | tee /tmp/next-hotspot-evidence/toolchain.txt
+      - name: Full release suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -j 4 -c release 2>&1 | tee /tmp/next-hotspot-evidence/release.log
+      - name: Full AddressSanitizer suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/next-hotspot-evidence/asan-debug.log
+      - name: Publish only verified new source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = "$(cat /tmp/next-hotspot-evidence/tree.txt)"
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          if [ "$CANDIDATE" = exclusion ]; then
+            branch=perf/exclusion-membership-20260909
+            message='Avoid quadratic membership scans in Elements.not'
+          else
+            branch=perf/ordered-set-insertion-20260909
+            message='Shift ordered-set storage once for interior insertion'
+          fi
+          test -z "$(git ls-remote --heads origin "refs/heads/$branch")"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "$message"
+          git push origin "HEAD:refs/heads/$branch"
+          git rev-parse HEAD > /tmp/next-hotspot-evidence/published-sha.txt
+          printf '%s\n' "$branch" > /tmp/next-hotspot-evidence/branch.txt
+          git archive HEAD | gzip > /tmp/next-hotspot-evidence/published-source.tar.gz
+          git ls-tree -r HEAD > /tmp/next-hotspot-evidence/published.tree
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collection-validation-${{ matrix.candidate }}
+          path: /tmp/next-hotspot-evidence/
+          retention-days: 30
