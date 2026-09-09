@@ -1,0 +1,139 @@
+name: Qualify independent prefix cursors and ordered moves
+on:
+  push:
+    branches: [review/cursor-move-qualification-20260909]
+    paths: [.github/workflows/cursor-move-qualification.yml]
+permissions:
+  contents: read
+jobs:
+  publish:
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: region
+            tree: 8a1c2eedc838aadcc8aadbafd276f48f45ac005b
+            branch: perf/region-prefix-cursors-20260909
+          - variant: move
+            tree: 882e9d8356e2aad287c347477cbd76c013be0c01
+            branch: perf/ordered-set-shift-moves-20260909
+          - variant: combined
+            tree: f7f67b03f129aeaea26692ffbb52ee708dbdfd91
+            branch: unused-combined-not-published
+    env:
+      VARIANT: ${{ matrix.variant }}
+      EXPECTED_TREE: ${{ matrix.tree }}
+      SOURCE_BRANCH: ${{ matrix.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct exact source-only tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name 'SwiftSoup optimization worker'
+          git config user.email 'actions@users.noreply.github.com'
+          mkdir -p /tmp/cursor-input /tmp/cursor-evidence
+          cp Study/CursorMove/* /tmp/cursor-input/
+          git checkout --detach fc7743a0f87ff117c4b8bb52dc4ca5befc958173
+          test "$(git rev-parse HEAD^{tree})" = d43369e18b00fdfc6e9431bf7979435707cb10b4
+          if [ "$VARIANT" = combined ]; then
+            git merge --no-edit --no-ff 053e315b82c204bf93398f70cb6834206c8fc8fc
+            git merge --no-edit --no-ff 31de9e42c160f6478cc6b2718094626843f68920
+            test "$(git rev-parse HEAD^{tree})" = cc79b973b1cb4e6d1d84acb9eb0e4507d4c46cef
+            git apply --index /tmp/cursor-input/runtime.patch
+            cp /tmp/cursor-input/*Test.swift Tests/SwiftSoupTests/
+          elif [ "$VARIANT" = region ]; then
+            git apply --index --include=Sources/String.swift /tmp/cursor-input/runtime.patch
+            cp /tmp/cursor-input/RegionCursorTest.swift Tests/SwiftSoupTests/
+          else
+            git apply --index --include=Sources/OrderedSet.swift /tmp/cursor-input/runtime.patch
+            cp /tmp/cursor-input/OrderedSetMoveShiftTest.swift Tests/SwiftSoupTests/
+          fi
+          cp /tmp/cursor-input/benchmark_cursor_moves.swift Tools/
+          cp /tmp/cursor-input/compare_cursor_moves.py Tools/
+          git add Sources Tests Tools/benchmark_cursor_moves.swift Tools/compare_cursor_moves.py
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --check --cached
+          git diff --exit-code
+          swift --version | tee /tmp/cursor-evidence/toolchain.txt
+          printf '%s\n' "$EXPECTED_TREE" > /tmp/cursor-evidence/source-tree.txt
+          git ls-tree -r "$EXPECTED_TREE" > /tmp/cursor-evidence/source.tree
+          git archive "$EXPECTED_TREE" | gzip > /tmp/cursor-evidence/source.tar.gz
+          git diff --cached > /tmp/cursor-evidence/change.patch
+      - name: Full release suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -j 4 -c release 2>&1 | tee /tmp/cursor-evidence/release.log
+      - name: Full AddressSanitizer debug suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/cursor-evidence/asan.log
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+      - name: Publish only new independently based source branches
+        if: matrix.variant != 'combined'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git show-ref --verify --quiet "refs/remotes/origin/$SOURCE_BRANCH"; then
+            echo 'Ref already exists; refusing to overwrite it'
+            exit 1
+          fi
+          commit=$(git commit-tree "$EXPECTED_TREE" -p fc7743a0f87ff117c4b8bb52dc4ca5befc958173 -m "Optimize $VARIANT with bounded existing storage and regression coverage")
+          git push origin "$commit:refs/heads/$SOURCE_BRANCH"
+          printf '%s\n' "$commit" > /tmp/cursor-evidence/published-commit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cursor-move-linux-${{ matrix.variant }}
+          path: /tmp/cursor-evidence/
+          retention-days: 30
+  apple:
+    needs: publish
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: region
+            tree: 8a1c2eedc838aadcc8aadbafd276f48f45ac005b
+            branch: perf/region-prefix-cursors-20260909
+          - variant: move
+            tree: 882e9d8356e2aad287c347477cbd76c013be0c01
+            branch: perf/ordered-set-shift-moves-20260909
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 2
+      - name: Verify published identity and execute complete suites
+        env:
+          EXPECTED_TREE: ${{ matrix.tree }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cursor-evidence
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test "$(git rev-parse HEAD^)" = fc7743a0f87ff117c4b8bb52dc4ca5befc958173
+          git rev-parse HEAD HEAD^{tree} > /tmp/cursor-evidence/identity.txt
+          swift --version | tee /tmp/cursor-evidence/toolchain.txt
+          swift test -j 4 -c release 2>&1 | tee /tmp/cursor-evidence/release.log
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/cursor-evidence/asan.log
+          git diff --exit-code HEAD
+          test -z "$(git ls-files --others --exclude-standard)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cursor-move-apple-${{ matrix.variant }}
+          path: /tmp/cursor-evidence/
+          retention-days: 30
