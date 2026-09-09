@@ -21,9 +21,9 @@ jobs:
     container: ${{ matrix.container }}
     timeout-minutes: 30
     env:
-      SOURCE_SHA: 29b1570bb2052ea2f437177aec82b544bf5bc9b9
-      TREE_SHA: b0160b101ebc04284cc60379ed4685945e54a208
-      EXPECTED_TESTS: '1238'
+      SOURCE_SHA: f6f84afee8c96cbd8a49963e8538a50006914441
+      TREE_SHA: cc79b973b1cb4e6d1d84acb9eb0e4507d4c46cef
+      EXPECTED_TESTS: '1245'
     steps:
       - uses: actions/checkout@v4
         with:
