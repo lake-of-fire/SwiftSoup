@@ -254,11 +254,15 @@ public class OrderedSet<T: Hashable> {
 			return
 		}
 
-		// Append our object, then swap them until its at the end.
-		append(object)
+		if index == count {
+			append(object)
+			return
+		}
 
-		for i in (index..<count-1).reversed() {
-			swapObject(self[i], with: self[i+1])
+		// Shift array storage once, then update each affected index once.
+		sequencedContents.insert(object, at: index)
+		for i in index..<sequencedContents.count {
+			contents[sequencedContents[i]] = i
 		}
 	}
 

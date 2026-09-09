@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Parse complete numeric selectors with ASCII digits, CSS whitespace and checked Int conversion. Correct implicit negative nth coefficients and reject malformed or out-of-range input with a normal parse error rather than trapping. Match all supported Int coefficients/offsets without arithmetic overflow and preserve An+B semantics in evaluator serialization. This intentionally stops accepting trailing garbage and non-CSS whitespace; no broader CSS token/comment/escape or `of S` support is added.
 * Keep validated absent attribute reads deferred and reject empty case-insensitive value queries before changing storage. Retain the existing bounded 32-name prefilter and exact comparisons. Validate both UTF-8 split partitions without recreating the entire text.
 * Fix regex capture extraction to use Foundation UTF-16 ranges, preventing Unicode-offset crashes and preserving captures within combining, emoji, and CRLF graphemes. `Matcher.group` now returns nil for invalid group indices or without a current match; participating empty captures remain empty strings. Exhausted matchers stop advancing their cursor. Pattern compilation reuse and legacy option handling are unchanged.
 * Empty child-list insertions and clearing an already empty Element no longer invalidate source/query/text caches or advance mutation tokens. Indexed insertions still validate bounds before returning. Empty TextNode insertion is still a real structural mutation.
