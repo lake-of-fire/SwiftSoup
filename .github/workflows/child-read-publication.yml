@@ -1,0 +1,114 @@
+name: Qualify independent child-read optimizations
+on:
+  push:
+    branches: [review/child-read-publication-20260909]
+    paths: [.github/workflows/child-read-publication.yml]
+permissions:
+  contents: read
+jobs:
+  publish:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: child
+            branch: perf/child-index-scan-20260909
+            tree: 6d67b9425fdc8f6428ee19e3ce8270928fb7d51a
+          - variant: only
+            branch: perf/only-child-predicate-20260909
+            tree: fb429602415045f5dc3b4153fde7b4a849bb2904
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    env:
+      VARIANT: ${{ matrix.variant }}
+      BRANCH: ${{ matrix.branch }}
+      EXPECTED_TREE: ${{ matrix.tree }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install reconstruction interpreter
+        run: apt-get update -qq && apt-get install -y -qq python3
+      - name: Reconstruct exact independently tested source
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory /tmp/child-read-source
+          mkdir -p evidence
+          git worktree add --detach /tmp/child-read-source ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2
+          python3 Study/ChildReads/prepare.py Study/ChildReads /tmp/child-read-source "$VARIANT" | tee evidence/reconstruction.txt
+          git -C /tmp/child-read-source diff --cached --check
+          swift --version | tee evidence/toolchain.txt
+      - name: Full release suite
+        run: |
+          set -euo pipefail
+          cd /tmp/child-read-source
+          swift test -j 4 -c release 2>&1 | tee "$GITHUB_WORKSPACE/evidence/release.log"
+      - name: Full AddressSanitizer debug suite
+        run: |
+          set -euo pipefail
+          cd /tmp/child-read-source
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$GITHUB_WORKSPACE/evidence/asan.log"
+      - name: Publish only the verified new branch
+        run: |
+          set -euo pipefail
+          cd /tmp/child-read-source
+          git diff --exit-code
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          test -z "$(git ls-remote --heads origin "refs/heads/$BRANCH")"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Avoid child-list materialization: $VARIANT"
+          test "$(git rev-parse HEAD^)" = ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git push origin "HEAD:refs/heads/$BRANCH"
+          git rev-parse HEAD HEAD^{tree} > "$GITHUB_WORKSPACE/evidence/identity.txt"
+          git ls-tree -r HEAD > "$GITHUB_WORKSPACE/evidence/source.tree"
+          git archive HEAD | gzip > "$GITHUB_WORKSPACE/evidence/source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: child-read-linux-${{ matrix.variant }}
+          path: evidence/
+          retention-days: 30
+  apple:
+    needs: publish
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: child
+            branch: perf/child-index-scan-20260909
+            tree: 6d67b9425fdc8f6428ee19e3ce8270928fb7d51a
+          - variant: only
+            branch: perf/only-child-predicate-20260909
+            tree: fb429602415045f5dc3b4153fde7b4a849bb2904
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+      - name: Validate published source and full suites
+        shell: bash
+        env:
+          EXPECTED_TREE: ${{ matrix.tree }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/child-read-evidence"
+          export EVIDENCE="$RUNNER_TEMP/child-read-evidence"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git rev-parse HEAD HEAD^{tree} | tee "$EVIDENCE/identity.txt"
+          swift --version | tee "$EVIDENCE/toolchain.txt"
+          swift test -j 4 -c release 2>&1 | tee "$EVIDENCE/release.log"
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$EVIDENCE/asan.log"
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: child-read-apple-${{ matrix.variant }}
+          path: ${{ runner.temp }}/child-read-evidence/
+          retention-days: 30
