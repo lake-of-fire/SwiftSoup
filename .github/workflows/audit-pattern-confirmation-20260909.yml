@@ -1,0 +1,198 @@
+name: Audit Pattern confirmation
+on:
+  push:
+    branches: [audit/export-and-verify-20260909]
+    paths: [.github/workflows/audit-pattern-confirmation-20260909.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    outputs:
+      source: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 7d2d58c6cb6dd1d2251eb9563a844b3d01718afe
+          fetch-depth: 0
+      - name: Reconcile existing implementation without rewriting history
+        run: |
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          git merge --no-ff --no-edit c6328dd6087e9c0aecc91b1eb5fc615d2517b8b1
+      - name: Add portable public-client confirmation
+        shell: python
+        run: |
+          from pathlib import Path
+          Path('Tools/benchmark_pattern_reuse.swift').write_text(r'''import Foundation
+          import Dispatch
+          import SwiftSoup
+
+          func option(_ key: String, _ fallback: String) -> String {
+              guard let i = CommandLine.arguments.firstIndex(of: key), i + 1 < CommandLine.arguments.count else { return fallback }
+              return CommandLine.arguments[i + 1]
+          }
+          let workload = option("--workload", "reused")
+          guard let iterations = Int(option("--iterations", "100")), iterations > 0 else { fatalError("Positive iterations required") }
+          let expression = "[0-9]+|日本語"
+          let texts = (0..<256).map { "日本語 item\($0)" }
+          let pattern = Pattern.compile(expression)
+          let markup = "<main>" + texts.prefix(64).map { "<p>\($0)</p>" }.joined() + "</main>"
+          @inline(never) func operation() throws -> Int {
+              var result = 0
+              switch workload {
+              case "reused":
+                  for text in texts { result += pattern.matcher(in: text).count }
+              case "validated":
+                  for text in texts { try pattern.validate(); result += pattern.matcher(in: text).count }
+              case "fresh":
+                  for text in texts { result += Pattern.compile(expression).matcher(in: text).count }
+              case "unused":
+                  for text in texts { result += Pattern.compile(expression + text).toString().utf8.count }
+              case "parse":
+                  result = try SwiftSoup.parse(markup).text().utf8.count
+              default: fatalError("Unknown workload")
+              }
+              return result
+          }
+          for _ in 0..<3 { _ = try operation() }
+          var checksum = 0
+          let start = DispatchTime.now().uptimeNanoseconds
+          for _ in 0..<iterations { checksum &+= try operation() }
+          let elapsed = DispatchTime.now().uptimeNanoseconds - start
+          let record: [String: Any] = ["workload": workload, "iterations": iterations, "elapsed_ns": elapsed,
+                                     "ns_per_op": Double(elapsed) / Double(iterations), "checksum": checksum]
+          print(String(decoding: try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), as: UTF8.self))
+          ''')
+          Path('Tools/compare_pattern_reuse.py').write_text(r'''#!/usr/bin/env python3
+          """Balanced fresh-process Pattern A/B and same-binary A/A; no dependencies.
+
+          Compile baseline/candidate shipping libraries identically and compile the
+          Swift client once against baseline. Compilation and correctness suites must
+          finish before this driver starts. Unused Pattern construction is reported
+          with fixed iterations: its very short baseline is not a precision benchmark.
+          """
+          import argparse
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import platform
+          import statistics
+          import subprocess
+
+          def main():
+              p = argparse.ArgumentParser(description=__doc__)
+              p.add_argument('--baseline-library', type=pathlib.Path, required=True)
+              p.add_argument('--candidate-library', type=pathlib.Path, required=True)
+              p.add_argument('--client', type=pathlib.Path, required=True)
+              p.add_argument('--output', type=pathlib.Path, required=True)
+              a = p.parse_args()
+              a.output.mkdir(parents=True, exist_ok=False)
+              if hasattr(os, 'sched_getaffinity'):
+                  os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
+              loader = 'DYLD_LIBRARY_PATH' if platform.system() == 'Darwin' else 'LD_LIBRARY_PATH'
+              libraries = {'A': a.baseline_library.resolve(), 'B': a.candidate_library.resolve()}
+              client = a.client.resolve()
+              records = []
+              def run(role, workload, count, stage, pair):
+                  env = dict(os.environ)
+                  env[loader] = str(libraries[role])
+                  result = json.loads(subprocess.check_output([str(client), '--workload', workload, '--iterations', str(count)], env=env, text=True))
+                  if result['iterations'] != count or result['elapsed_ns'] <= 0:
+                      raise RuntimeError('Invalid timing record')
+                  result.update(role=role, stage=stage, pair=pair)
+                  records.append(result)
+                  with (a.output / 'raw.jsonl').open('a') as out:
+                      out.write(json.dumps(result, sort_keys=True) + '\n')
+                  return result
+              summary = {}
+              for workload in ['reused', 'validated', 'fresh', 'parse', 'unused']:
+                  ca = run('A', workload, 2, 'calibration', -1)
+                  cb = run('B', workload, 2, 'calibration', -1)
+                  if ca['checksum'] != cb['checksum']:
+                      raise RuntimeError('Output mismatch during calibration')
+                  count = 8 if workload == 'unused' else max(2, min(4096, int(150000000 / min(ca['ns_per_op'], cb['ns_per_op']))))
+                  summary[workload] = {}
+                  for stage, pairs in [('aa', 8), ('ab', 12)]:
+                      ratios = []
+                      for pair in range(pairs):
+                          roles = ['A', 'B'] if pair % 2 == 0 else ['B', 'A']
+                          observed = {}
+                          for role in roles:
+                              observed[role] = run('A' if stage == 'aa' else role, workload, count, stage, pair)
+                          if observed['A']['checksum'] != observed['B']['checksum']:
+                              raise RuntimeError('Output mismatch')
+                          ratios.append(observed['B']['ns_per_op'] / observed['A']['ns_per_op'] - 1)
+                      summary[workload][stage] = {'pairs': pairs, 'median_percent_change': 100 * statistics.median(ratios),
+                                                 'faster_pairs': sum(r < 0 for r in ratios), 'paired_changes': ratios}
+              identities = {'platform': platform.platform(), 'client_sha256': hashlib.sha256(client.read_bytes()).hexdigest()}
+              for role, directory in libraries.items():
+                  identities[role] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in directory.glob('libSwiftSoup.*')}
+              (a.output / 'summary.json').write_text(json.dumps({'identities': identities, 'results': summary}, indent=2) + '\n')
+              print(json.dumps(summary, indent=2))
+          if __name__ == '__main__':
+              main()
+          ''')
+      - id: source
+        name: Publish only reviewed source and portable tools to an audit ref
+        run: |
+          set -euo pipefail
+          python3 -m py_compile Tools/compare_pattern_reuse.py
+          git diff --check
+          git add Tools/benchmark_pattern_reuse.swift Tools/compare_pattern_reuse.py
+          git commit -m 'Add portable Pattern reuse A-B and same-binary controls'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git push origin HEAD:refs/heads/audit/pattern-source-20260909
+          mkdir -p "$RUNNER_TEMP/identity"
+          git show -s --format='%H %T %P' > "$RUNNER_TEMP/identity/source.txt"
+          git diff 7d2d58c6cb6dd1d2251eb9563a844b3d01718afe HEAD > "$RUNNER_TEMP/identity/source.patch"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audit-pattern-source
+          path: ${{ runner.temp }}/identity
+          retention-days: 30
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test exact committed source
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          swift --version | tee "$RUNNER_TEMP/evidence/compiler.txt"
+          git show -s --format='%H %T' | tee "$RUNNER_TEMP/evidence/source.txt"
+          swift test -c debug > "$RUNNER_TEMP/evidence/debug.log" 2>&1
+          swift test -c release > "$RUNNER_TEMP/evidence/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -c release --sanitize address > "$RUNNER_TEMP/evidence/asan.log" 2>&1
+      - name: Build shipping libraries then run isolated paired confirmation
+        run: |
+          set -euo pipefail
+          git worktree add "$RUNNER_TEMP/baseline" 7d2d58c6cb6dd1d2251eb9563a844b3d01718afe
+          mkdir -p "$RUNNER_TEMP/base-lib" "$RUNNER_TEMP/candidate-lib"
+          ext=so
+          [ "$(uname -s)" != Darwin ] || ext=dylib
+          swiftc -swift-version 6 -O -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup "$RUNNER_TEMP/baseline"/Sources/*.swift -emit-module-path "$RUNNER_TEMP/base-lib/SwiftSoup.swiftmodule" -o "$RUNNER_TEMP/base-lib/libSwiftSoup.$ext"
+          swiftc -swift-version 6 -O -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup Sources/*.swift -emit-module-path "$RUNNER_TEMP/candidate-lib/SwiftSoup.swiftmodule" -o "$RUNNER_TEMP/candidate-lib/libSwiftSoup.$ext"
+          swiftc -O -I "$RUNNER_TEMP/base-lib" -L "$RUNNER_TEMP/base-lib" -lSwiftSoup Tools/benchmark_pattern_reuse.swift -o "$RUNNER_TEMP/pattern-client"
+          python3 Tools/compare_pattern_reuse.py --baseline-library "$RUNNER_TEMP/base-lib" --candidate-library "$RUNNER_TEMP/candidate-lib" --client "$RUNNER_TEMP/pattern-client" --output "$RUNNER_TEMP/evidence/timing"
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-pattern-${{ matrix.os }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 30
+          if-no-files-found: error
