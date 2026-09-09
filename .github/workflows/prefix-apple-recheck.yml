@@ -1,0 +1,54 @@
+name: Recheck Apple short-prefix tradeoff
+on:
+  push:
+    branches: [review/cursor-move-qualification-20260909]
+    paths: [.github/workflows/prefix-apple-recheck.yml]
+permissions:
+  contents: read
+jobs:
+  repeat:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rebuild identical frozen shipping revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/prefix-repeat
+          git worktree add --detach /tmp/repeat-base fc7743a0f87ff117c4b8bb52dc4ca5befc958173
+          git worktree add --detach /tmp/repeat-candidate 0aa13e0b536841406443e31a0335c0be287572b7
+          test "$(git -C /tmp/repeat-base rev-parse HEAD^{tree})" = d43369e18b00fdfc6e9431bf7979435707cb10b4
+          test "$(git -C /tmp/repeat-candidate rev-parse HEAD^{tree})" = 8a1c2eedc838aadcc8aadbafd276f48f45ac005b
+          swift --version > /tmp/prefix-repeat/toolchain.txt
+          sw_vers > /tmp/prefix-repeat/os.txt
+          for v in base candidate; do
+            lib=/tmp/repeat-$v-lib
+            mkdir "$lib"
+            git -C "/tmp/repeat-$v" rev-parse HEAD HEAD^{tree} > "/tmp/prefix-repeat/source-$v.txt"
+            swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path "$lib/SwiftSoup.swiftmodule" /tmp/repeat-$v/Sources/*.swift -o "$lib/libSwiftSoup.dylib" 2>&1 | tee "/tmp/prefix-repeat/build-$v.log"
+            swiftc -swift-version 6 -O /tmp/repeat-candidate/Tools/benchmark_cursor_moves.swift -I "$lib" -L "$lib" -lSwiftSoup -o "$lib/client" 2>&1 | tee -a "/tmp/prefix-repeat/build-$v.log"
+          done
+          python3 -m venv /tmp/repeat-env
+          /tmp/repeat-env/bin/python -m pip install numpy scipy > /tmp/prefix-repeat/install.log 2>&1
+          /tmp/repeat-env/bin/python -m pip freeze > /tmp/prefix-repeat/dependencies.txt
+      - name: Longer independent A/B and A/A without pooling
+        env:
+          OPENBLAS_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for stage in ab aa; do
+            if [ "$stage" = aa ]; then options='--aa --ms 240'; else options='--ms 320'; fi
+            /tmp/repeat-env/bin/python /tmp/repeat-candidate/Tools/compare_cursor_moves.py --baseline-client /tmp/repeat-base-lib/client --candidate-client /tmp/repeat-candidate-lib/client --baseline-library /tmp/repeat-base-lib --candidate-library /tmp/repeat-candidate-lib --suite region --workloads region-short prefix-short parse-selector parse-control --blocks 12 $options --output "/tmp/prefix-repeat/$stage" 2>&1 | tee "/tmp/prefix-repeat/$stage.log"
+          done
+          git -C /tmp/repeat-base diff --exit-code HEAD
+          git -C /tmp/repeat-candidate diff --exit-code HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prefix-apple-recheck
+          path: /tmp/prefix-repeat/
+          retention-days: 30
