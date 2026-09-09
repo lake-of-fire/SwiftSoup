@@ -830,6 +830,9 @@ import Foundation
     }
 
     private func stripCSSComments(_ style: String) -> String {
+        // A comment cannot start without an ASCII slash. Leave the existing
+        // quote/escape-aware scanner authoritative whenever one is present.
+        guard style.utf8.contains(0x2F) else { return style }
         var result = ""
         var quote: Character?
         var isEscaped = false
