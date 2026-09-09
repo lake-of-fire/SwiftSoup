@@ -58,6 +58,8 @@ class HtmlTreeBuilder: TreeBuilder {
     private var _framesetOk: Bool = true // if ok to go into frameset
     private var fosterInserts: Bool = false // if next inserts should be fostered
     private var fragmentParsing: Bool = false // if parsing a fragment of html
+    // Only true inside the private fragment parse loop, not manual token processing.
+    private var constructingFragment: Bool = false
 
     private var stackTrackingDirty: Bool = false
     private var stackUnknownTagIdCount: Int = 0
@@ -133,6 +135,8 @@ class HtmlTreeBuilder: TreeBuilder {
             }
         }
         
+        constructingFragment = true
+        defer { constructingFragment = false }
         try runParser()
         if (context != nil && root != nil) {
             return root!.getChildNodes()
@@ -201,7 +205,17 @@ class HtmlTreeBuilder: TreeBuilder {
 
     @inline(__always)
     func markStructuralChange(_ node: Node? = nil) {
-        (node ?? currentElement())?.markSourceDirty(force: true)
+        guard let node = node ?? currentElement() else { return }
+        if (isBulkBuilding || constructingFragment), doc.sourceRangeDirty,
+           doc.dirtySourceRoots[ObjectIdentifier(doc)]?.value === doc {
+            // Only parser-owned construction can use the known document. Public
+            // TreeBuilder stack edits outside parsing must retain owner dispatch.
+            // The current parser tree is already covered. A newly synthesized
+            // detached element also has no document registration to perform.
+            node.markSourceDirty(force: true, registerDirtyRoot: false)
+        } else {
+            node.markSourceDirty(force: true)
+        }
     }
     
     func state() -> HtmlTreeBuilderState {
@@ -544,6 +558,8 @@ class HtmlTreeBuilder: TreeBuilder {
             current.childNodes.append(node)
             node.parentNode = current
             node.setSiblingIndex(current.childNodes.count - 1)
+        } else if fragmentParsing, !fosterInserts, let current, node.parentNode == nil {
+            appendFragmentNode(node, to: current)
         } else {
             try current?.appendChild(node) // doesn't use insertNode, because we don't foster these; and will always have a stack.
         }
@@ -563,6 +579,8 @@ class HtmlTreeBuilder: TreeBuilder {
                 node.parentNode = current
                 current.childNodes.append(node)
                 node.setSiblingIndex(current.childNodes.count - 1)
+            } else if fragmentParsing, node.parentNode == nil {
+                appendFragmentNode(node, to: current)
             } else {
                 try current.appendChild(node)
             }
@@ -577,6 +595,37 @@ class HtmlTreeBuilder: TreeBuilder {
         }
     }
     
+    /// Appends a newly created fragment node to this parser's private tree.
+    /// Keep fragment mutation/range bookkeeping, but reuse its known document.
+    @usableFromInline
+    internal func appendFragmentNode(_ node: Node, to parent: Element) {
+        if constructingFragment, let element = node as? Element {
+            // Mark the new detached element, but do not walk its private
+            // ancestors again: each has already been dirtied on insertion.
+            // No query indexes are built during the fragment parser loop.
+            element.markQueryIndexesDirty()
+            let suppressed = element.suppressQueryIndexDirty
+            element.suppressQueryIndexDirty = true
+            node.parentNode = parent
+            element.suppressQueryIndexDirty = suppressed
+        } else {
+            node.parentNode = parent
+        }
+        node.treeBuilder = parent.treeBuilder
+        parent.childNodes.append(node)
+        node.setSiblingIndex(parent.childNodes.count - 1)
+        if constructingFragment, doc.sourceRangeDirty,
+           doc.dirtySourceRoots[ObjectIdentifier(doc)]?.value === doc {
+            // The registered document already covers this private fragment tree.
+            // Preserve dirty flags without rediscovering/registering that root.
+            node.markSourceDirty(force: false, registerDirtyRoot: false)
+            parent.markSourceDirty(force: false, registerDirtyRoot: false)
+        } else {
+            node.markSourceDirty()
+            parent.markSourceDirty()
+        }
+    }
+
     @discardableResult
     func pop() -> Element {
         let element = stack.removeLast()
