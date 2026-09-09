@@ -257,32 +257,42 @@ public class QueryParser {
         evals.append(Evaluator.IndexEquals(try consumeIndex()))
     }
 
-    //pseudo selectors :first-child, :last-child, :nth-child, ...
-    private static let NTH_AB: Pattern = Pattern.compile("((\\+|-)?(\\d+)?)n(\\s*(\\+|-)?\\s*\\d+)?", Pattern.CASE_INSENSITIVE)
-    private static let NTH_B: Pattern = Pattern.compile("(\\+|-)?(\\d+)")
+    // Parse the entire supported An+B spelling. CSS permits whitespace around
+    // the B separator, not inside the A coefficient or an integer's sign.
+    private static let NTH_AB = Pattern.compile(#"\A([+-]?[0-9]*)n(?:[\t\n\f\r ]*([+-])[\t\n\f\r ]*([0-9]+))?\z"#)
+    private static let NTH_B = Pattern.compile(#"\A[+-]?[0-9]+\z"#)
 
-    private func cssNthChild(_ backwards: Bool, _ ofType: Bool)throws {
-        let argS: String = tq.chompTo(")").trim().lowercased()
-        let mAB: Matcher = QueryParser.NTH_AB.matcher(in: argS)
-        let mB: Matcher = QueryParser.NTH_B.matcher(in: argS)
-        var a: Int
-        var b: Int
-        if ("odd"==argS) {
+    private func cssNthChild(_ backwards: Bool, _ ofType: Bool) throws {
+        let argS = try consumeNumericArgument().lowercased()
+        let a: Int
+        let b: Int
+        if argS == "odd" {
             a = 2
             b = 1
-        } else if ("even"==argS) {
+        } else if argS == "even" {
             a = 2
             b = 0
-        } else if (!mAB.matches.isEmpty) {
-			mAB.find()
-            a = mAB.group(3) != nil ? Int(mAB.group(1)!.replaceFirst(of: "^\\+", with: ""))! : 1
-            b = mAB.group(4) != nil ? Int(mAB.group(4)!.replaceFirst(of: "^\\+", with: ""))! : 0
-        } else if (!mB.matches.isEmpty) {
-            a = 0
-			mB.find()
-            b = Int(mB.group()!.replaceFirst(of: "^\\+", with: ""))!
         } else {
-            throw Exception.Error(type: ExceptionType.SelectorParseException, Message: "Could not parse nth-index '\(argS)': unexpected format")
+            let mAB = QueryParser.NTH_AB.matcher(in: argS)
+            if mAB.find(), let coefficient = mAB.group(1) {
+                switch coefficient {
+                case "", "+": a = 1
+                case "-": a = -1
+                default: a = try QueryParser.nthInteger(coefficient)
+                }
+                if let sign = mAB.group(2), let digits = mAB.group(3) {
+                    // Convert the signed spelling together so Int.min is valid.
+                    b = try QueryParser.nthInteger(sign + digits)
+                } else {
+                    b = 0
+                }
+            } else if QueryParser.NTH_B.matcher(in: argS).find() {
+                a = 0
+                b = try QueryParser.nthInteger(argS)
+            } else {
+                throw Exception.Error(type: .SelectorParseException,
+                                      Message: "Could not parse nth-index '\(argS)': unexpected format")
+            }
         }
         if (ofType) {
             if (backwards) {
@@ -299,10 +309,36 @@ public class QueryParser {
         }
     }
 
-    private func consumeIndex()throws->Int {
-        let indexS: String = tq.chompTo(")").trim()
-        try Validate.isTrue(val: StringUtil.isNumeric(indexS), msg: "Index must be numeric")
-        return Int(indexS)!
+    private static func nthInteger(_ spelling: String) throws -> Int {
+        guard let value = Int(spelling) else {
+            throw Exception.Error(type: .SelectorParseException,
+                                  Message: "Nth-index integer is outside the supported Int range")
+        }
+        return value
+    }
+
+    private func consumeNumericArgument() throws -> String {
+        // Do not call the general substring search at end-of-input: it assumes
+        // there is at least one remaining character for its search range.
+        guard !tq.isEmpty() else {
+            throw Exception.Error(type: .SelectorParseException, Message: "Unclosed numeric selector")
+        }
+        let argument = TokenQueue.trimCssQuery(tq.consumeTo(")"))
+        guard tq.matchChomp(")") else {
+            throw Exception.Error(type: .SelectorParseException, Message: "Unclosed numeric selector")
+        }
+        return argument
+    }
+
+    private func consumeIndex() throws -> Int {
+        let indexS = try consumeNumericArgument()
+        guard !indexS.isEmpty,
+              indexS.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+              let index = Int(indexS) else {
+            throw Exception.Error(type: .SelectorParseException,
+                                  Message: "Index must be an unsigned decimal within the supported Int range")
+        }
+        return index
     }
 
     // pseudo selector :has(el)
