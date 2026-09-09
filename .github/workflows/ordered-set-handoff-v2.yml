@@ -1,0 +1,424 @@
+name: Ordered-set handoff source qualification
+on:
+  push:
+    branches: [audit/ordered-set-handoff-v2-20260909]
+    paths: [.github/workflows/ordered-set-handoff-v2.yml]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      source: ${{ steps.publish.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 97e071d6d42794ebbca7716a22605176325c6445
+      - name: Reconstruct the four reviewed files, check full tree, publish source-only child
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 97e071d6d42794ebbca7716a22605176325c6445
+          test "$(git rev-parse HEAD^{tree})" = b0160b101ebc04284cc60379ed4685945e54a208
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Sources/OrderedSet.swift')
+          text = p.read_text()
+          old = '\t\t\t\tcontents[first] = secondPosition\n\t\t\t\tcontents[second] = firstPosition\n\n\t\t\t\tsequencedContents[firstPosition] = second\n\t\t\t\tsequencedContents[secondPosition] = first\n'
+          new = '\t\t\t\tguard firstPosition != secondPosition else { return }\n\t\t\t\t// Arguments identify members; a swap must not replace the stored\n\t\t\t\t// representatives with equal-but-distinct lookup values.\n\t\t\t\tlet storedFirst = sequencedContents[firstPosition]\n\t\t\t\tlet storedSecond = sequencedContents[secondPosition]\n\t\t\t\tcontents[storedFirst] = secondPosition\n\t\t\t\tcontents[storedSecond] = firstPosition\n\t\t\t\tsequencedContents.swapAt(firstPosition, secondPosition)\n'
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+          old = '\tTests if a the ordered set is a subset of another sequence.\n'
+          new = '\tTests if the ordered set is a subset of another sequence.\n\tThe input is consumed at most once and stops when all members are found.\n\tTemporary membership storage is bounded by the receiver count.\n'
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+          old = '\t\tfor (object, _) in contents {\n\t\t\tif !sequence.contains(object) {\n\t\t\t\treturn false\n\t\t\t}\n\t\t}\n\n\t\treturn true\n'
+          new = '\t\tguard !contents.isEmpty else { return true }\n\t\t// Sequence need not be restartable. Track required members while\n\t\t// consuming a single iterator, without retaining the input\'s tail.\n\t\tvar remaining = Set(contents.keys)\n\t\tfor object in sequence {\n\t\t\tremaining.remove(object)\n\t\t\tif remaining.isEmpty { return true }\n\t\t}\n\t\treturn false\n'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, new))
+          p = Path('CHANGELOG.md')
+          text = p.read_text()
+          old = '## Unreleased\n'
+          new = '## Unreleased\n* Check `OrderedSet.isSubset(of:)` with a single input traversal. Single-pass sequences no longer lose earlier matches or depend on hash iteration order. Empty receivers do not consume the input; successful checks stop once all required members are found. The temporary membership set is bounded by receiver size.\n* Preserve stored representatives in `OrderedSet.swapObject(_:with:)`, including canonically equivalent String bytes. Equal lookup arguments no longer replace or remain retained as members; swapping the same member is a no-op. Explicit equal-value replacement through `append` remains unchanged.\n'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, new))
+          Path('Tests/SwiftSoupTests/OrderedSetSinglePassSubsetTest.swift').write_text(r'''import XCTest
+          import SwiftSoup
+
+          final class OrderedSetSinglePassSubsetTest: XCTestCase {
+              /// A valid single-pass Sequence: every iterator shares one input cursor.
+              private final class Stream<Value>: Sequence, IteratorProtocol {
+                  private let values: [Value]
+                  private(set) var position = 0
+                  private(set) var iteratorCount = 0
+                  private(set) var nextCount = 0
+                  init(_ values: [Value]) { self.values = values }
+                  func makeIterator() -> Stream<Value> { iteratorCount += 1; return self }
+                  func next() -> Value? {
+                      nextCount += 1
+                      guard position < values.count else { return nil }
+                      defer { position += 1 }
+                      return values[position]
+                  }
+              }
+              private final class Item: Hashable {
+                  let key: Int
+                  let payload: String
+                  init(_ key: Int, _ payload: String) { self.key = key; self.payload = payload }
+                  static func == (lhs: Item, rhs: Item) -> Bool { lhs.key == rhs.key }
+                  func hash(into hasher: inout Hasher) { hasher.combine(0) }
+              }
+              func testSinglePassPermutationsContainTheSameMembers() {
+                  let set = OrderedSet(sequence: [1, 2, 3])
+                  for values in [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]] {
+                      XCTAssertTrue(set.isSubset(of: Stream(values)), "stream: \(values)")
+                      XCTAssertEqual(Array(set), [1, 2, 3])
+                  }
+              }
+              func testCreatesOneIteratorAndStopsAfterTheLastRequiredMember() {
+                  let stream = Stream([99, 3, 99, 1, 99, 2, 100, 101])
+                  let set = OrderedSet(sequence: [1, 2, 3])
+                  XCTAssertTrue(set.isSubset(of: stream))
+                  XCTAssertEqual(stream.iteratorCount, 1)
+                  XCTAssertEqual(stream.position, 6)
+                  XCTAssertEqual(stream.nextCount, 6)
+                  XCTAssertEqual(stream.next(), 100, "must not materialize the unused tail")
+              }
+              func testStandardAnyIteratorCanBeConsumedOnlyOnce() {
+                  let permutations = [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]]
+                  for values in permutations {
+                      var position = 0
+                      let iterator = AnyIterator<Int> {
+                          guard position < values.count else { return nil }
+                          defer { position += 1 }
+                          return values[position]
+                      }
+                      XCTAssertTrue(OrderedSet(sequence: [1, 2, 3]).isSubset(of: iterator))
+                  }
+              }
+              func testEmptyReceiverDoesNotConsumeOrCreateAnIterator() {
+                  let stream = Stream([1, 2, 3])
+                  XCTAssertTrue(OrderedSet<Int>().isSubset(of: stream))
+                  XCTAssertEqual(stream.iteratorCount, 0)
+                  XCTAssertEqual(stream.nextCount, 0)
+              }
+              func testMissingMembersAndDuplicateValues() {
+                  for values in [[], [0], [1, 1, 1], [3, 2, 2, 9], [9, 9, 9]] {
+                      let required = [1, 2, 3]
+                      let expected = required.allSatisfy { values.contains($0) }
+                      XCTAssertEqual(OrderedSet(sequence: required).isSubset(of: Stream(values)), expected)
+                  }
+                  for values in [[3, 3, 1, 1, 2, 2], [2, 2, 1, 1, 3, 3], [1, 1, 2, 2, 3, 3]] {
+                      XCTAssertTrue(OrderedSet(sequence: [1, 2, 3]).isSubset(of: Stream(values)))
+                  }
+              }
+              func testReferenceRepresentativesRemainStoredAndLookupsAreReleased() {
+                  let a = Item(1, "original-a"), b = Item(2, "original-b")
+                  let set = OrderedSet(sequence: [a, b])
+                  var iterator = set.makeIterator()
+                  weak var lookup: Item?
+                  do {
+                      let temporary = Item(1, "lookup")
+                      lookup = temporary
+                      XCTAssertTrue(set.isSubset(of: [Item(2, "lookup"), temporary]))
+                  }
+                  XCTAssertNil(lookup)
+                  XCTAssertTrue(set[0] === a)
+                  XCTAssertTrue(set[1] === b)
+                  XCTAssertTrue(iterator.next() === a)
+                  XCTAssertTrue(iterator.next() === b)
+                  XCTAssertEqual(set.index(of: Item(1, "probe")), 0)
+                  XCTAssertEqual(set.index(of: Item(2, "probe")), 1)
+              }
+              func testCanonicalStringEqualityDoesNotRewriteStoredBytes() {
+                  let composed = "caf\u{E9}", decomposed = "cafe\u{301}"
+                  let set = OrderedSet(sequence: [composed, "日本"])
+                  XCTAssertTrue(set.isSubset(of: ["日本", decomposed]))
+                  XCTAssertEqual(set.map { Array($0.utf8) }, [Array(composed.utf8), Array("日本".utf8)])
+              }
+              func testGeneratedStreamsMatchAnIndependentArrayMembershipOracle() {
+                  // 364 streams, eight subsets, both receiver orders: 5,824 comparisons.
+                  for length in 0...5 {
+                      var count = 1
+                      for _ in 0..<length { count *= 3 }
+                      for code in 0..<count {
+                          var remaining = code
+                          var values: [Int] = []
+                          for _ in 0..<length { values.append(remaining % 3); remaining /= 3 }
+                          for mask in 0..<8 {
+                              let required = (0..<3).filter { mask & (1 << $0) != 0 }
+                              let expected = required.allSatisfy { values.contains($0) }
+                              for order in [required, Array(required.reversed())] {
+                                  let set = OrderedSet(sequence: order)
+                                  let stream = Stream(values)
+                                  XCTAssertEqual(set.isSubset(of: stream), expected,
+                                                 "receiver=\(order), input=\(values)")
+                                  XCTAssertEqual(Array(set), order)
+                                  XCTAssertLessThanOrEqual(stream.iteratorCount, 1)
+                              }
+                          }
+                      }
+                  }
+              }
+              func testSelfAndRestartableCollectionsRemainSupported() {
+                  for width in 0...24 {
+                      let values = Array(0..<width)
+                      let set = OrderedSet(sequence: values)
+                      XCTAssertTrue(set.isSubset(of: set))
+                      XCTAssertTrue(set.isSubset(of: values.reversed()))
+                      XCTAssertTrue(set.isSubset(of: Set(values)))
+                      XCTAssertEqual(set.isSubset(of: values.dropLast()), values.isEmpty)
+                      XCTAssertEqual(Array(set), values)
+                  }
+              }
+              func testLazyUnboundedInputStopsWhenTheSubsetIsProved() {
+                  var requested = 0
+                  let input = AnySequence<Int> {
+                      AnyIterator { requested += 1; return 42 }
+                  }
+                  XCTAssertTrue(OrderedSet(sequence: [42]).isSubset(of: input))
+                  XCTAssertEqual(requested, 1)
+              }
+          }
+          ''')
+          Path('Tests/SwiftSoupTests/OrderedSetSwapIdentityTest.swift').write_text(r'''import XCTest
+          import SwiftSoup
+
+          final class OrderedSetSwapIdentityTest: XCTestCase {
+              private final class Item: Hashable {
+                  let key: Int
+                  let payload: String
+                  init(_ key: Int, _ payload: String = "stored") { self.key = key; self.payload = payload }
+                  static func == (lhs: Item, rhs: Item) -> Bool { lhs.key == rhs.key }
+                  func hash(into hasher: inout Hasher) { hasher.combine(0) }
+              }
+
+              private func check(_ set: OrderedSet<Int>, _ expected: [Int],
+                                 file: StaticString = #filePath, line: UInt = #line) {
+                  XCTAssertEqual(Array(set), expected, file: file, line: line)
+                  XCTAssertEqual(set.count, expected.count, file: file, line: line)
+                  for (index, value) in expected.enumerated() {
+                      XCTAssertEqual(set.index(of: value), index, file: file, line: line)
+                  }
+              }
+
+              func testEqualLookupArgumentsDoNotReplaceStoredRepresentatives() {
+                  let a = Item(1), b = Item(2), c = Item(3)
+                  let set = OrderedSet(sequence: [a, b, c])
+                  set.swapObject(Item(1, "lookup-a"), with: Item(3, "lookup-c"))
+                  XCTAssertEqual(set.map(ObjectIdentifier.init), [c, b, a].map(ObjectIdentifier.init))
+                  XCTAssertTrue(set[0] === c)
+                  XCTAssertTrue(set[2] === a)
+                  for (index, item) in [c, b, a].enumerated() {
+                      XCTAssertEqual(set.index(of: Item(item.key)), index)
+                  }
+              }
+
+              func testEqualKeySelfSwapIsAnIdentityPreservingNoOp() {
+                  let stored = Item(1)
+                  let set = OrderedSet(sequence: [stored])
+                  set.swapObject(Item(1, "left lookup"), with: Item(1, "right lookup"))
+                  XCTAssertTrue(set.first === stored)
+                  XCTAssertEqual(set.count, 1)
+                  XCTAssertEqual(set.index(of: stored), 0)
+              }
+
+              func testTemporaryLookupArgumentsAreNotRetainedBySwapping() {
+                  let set = OrderedSet(sequence: [Item(1), Item(2)])
+                  weak var firstLookup: Item?
+                  weak var secondLookup: Item?
+                  do {
+                      let a = Item(1, "temporary-a"), b = Item(2, "temporary-b")
+                      firstLookup = a; secondLookup = b
+                      set.swapObject(a, with: b)
+                  }
+                  XCTAssertNil(firstLookup)
+                  XCTAssertNil(secondLookup)
+                  XCTAssertEqual(set.map(\.payload), ["stored", "stored"])
+              }
+
+              func testCanonicalEquivalentLookupPreservesStoredStringBytes() {
+                  let stored = "caf\u{E9}", lookup = "cafe\u{301}"
+                  XCTAssertEqual(stored, lookup)
+                  XCTAssertNotEqual(Array(stored.utf8), Array(lookup.utf8))
+                  let set = OrderedSet(sequence: [stored, "日本"])
+                  set.swapObject(lookup, with: "日本")
+                  XCTAssertEqual(set.map { Array($0.utf8) }, [Array("日本".utf8), Array(stored.utf8)])
+                  set.swapObject(lookup, with: stored)
+                  XCTAssertEqual(set.map { Array($0.utf8) }, [Array("日本".utf8), Array(stored.utf8)])
+              }
+
+              func testEveryPairIncludingSelfAndMissingKeysPreservesIndices() {
+                  for width in 0...32 {
+                      for a in -1...width {
+                          for b in -1...width {
+                              let set = OrderedSet(sequence: 0..<width)
+                              var expected = Array(0..<width)
+                              if a >= 0, a < width, b >= 0, b < width { expected.swapAt(a, b) }
+                              set.swapObject(a, with: b)
+                              check(set, expected)
+                              set.swapObject(a, with: b)
+                              check(set, Array(0..<width))
+                          }
+                      }
+                  }
+              }
+
+              func testSnapshotIteratorAndDeliberateHashCollisions() {
+                  let values = (0..<48).map { Item($0) }
+                  let set = OrderedSet(sequence: values)
+                  var snapshot = set.makeIterator()
+                  var expected = values
+                  for i in 0..<192 {
+                      let a = (i * 7) % 48, b = (i * 11 + 3) % 48
+                      set.swapObject(expected[a], with: expected[b])
+                      expected.swapAt(a, b)
+                      XCTAssertEqual(set.map(ObjectIdentifier.init), expected.map(ObjectIdentifier.init))
+                      for (index, item) in expected.enumerated() { XCTAssertEqual(set.index(of: item), index) }
+                  }
+                  for item in values { XCTAssertTrue(snapshot.next() === item) }
+                  XCTAssertNil(snapshot.next())
+              }
+
+              func testMissingObjectDoesNotReplaceAnEqualPresentRepresentative() {
+                  let stored = Item(1)
+                  let set = OrderedSet(sequence: [stored])
+                  set.swapObject(Item(1, "lookup"), with: Item(2))
+                  set.swapObject(Item(2), with: Item(1, "lookup"))
+                  XCTAssertTrue(set.first === stored)
+                  XCTAssertEqual(set.count, 1)
+                  XCTAssertNil(set.index(of: Item(2)))
+              }
+
+              func testSwapsComposeWithAppendReplacementRemovalInsertionAndMoves() {
+                  let set = OrderedSet<Int>()
+                  var expected: [Int] = []
+                  var state: UInt64 = 0x9B05_20260909
+                  func next(_ limit: Int) -> Int {
+                      state = state &* 6364136223846793005 &+ 1442695040888963407
+                      return Int((state >> 32) % UInt64(limit))
+                  }
+                  for _ in 0..<2048 {
+                      let a = next(64), b = next(64)
+                      switch next(5) {
+                      case 0:
+                          set.append(a)
+                          if !expected.contains(a) { expected.append(a) }
+                      case 1:
+                          set.remove(a); expected.removeAll { $0 == a }
+                      case 2:
+                          let gap = next(expected.count + 1)
+                          set.insert(a, at: gap)
+                          if !expected.contains(a) { expected.insert(a, at: gap) }
+                      case 3:
+                          if !expected.isEmpty {
+                              let destination = next(expected.count)
+                              set.moveObject(a, toIndex: destination)
+                              if let index = expected.firstIndex(of: a) {
+                                  expected.insert(expected.remove(at: index), at: destination)
+                              }
+                          }
+                      default:
+                          set.swapObject(a, with: b)
+                          if let first = expected.firstIndex(of: a), let second = expected.firstIndex(of: b) {
+                              expected.swapAt(first, second)
+                          }
+                      }
+                      check(set, expected)
+                  }
+                  let original = Item(1), replacement = Item(1, "replacement"), other = Item(2)
+                  let objects = OrderedSet(sequence: [original, other])
+                  objects.append(replacement) // Append intentionally replaces equal representatives.
+                  objects.swapObject(replacement, with: other)
+                  XCTAssertTrue(objects[1] === replacement)
+                  objects.remove(Item(1))
+                  XCTAssertEqual(objects.count, 1)
+                  XCTAssertTrue(objects[0] === other)
+              }
+          }
+          ''')
+          PY
+          git add Sources/OrderedSet.swift CHANGELOG.md Tests/SwiftSoupTests/OrderedSetSinglePassSubsetTest.swift Tests/SwiftSoupTests/OrderedSetSwapIdentityTest.swift
+          git diff --cached --check
+          test "$(git write-tree)" = f513bedb4b276741ba872d08a4ef0887563270b1
+          test "$(git diff --cached --name-only | wc -l)" -eq 4
+          target=fix/ordered-set-sequence-identity-20260909
+          test -z "$(git ls-remote --heads origin "refs/heads/$target")"
+          export GIT_AUTHOR_NAME='OpenAI assistant' GIT_AUTHOR_EMAIL='noreply@openai.com'
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          commit=$(git commit-tree f513bedb4b276741ba872d08a4ef0887563270b1 -p 97e071d6d42794ebbca7716a22605176325c6445 -m 'Preserve ordered-set representatives and consume subset sequences once')
+          git push origin "$commit:refs/heads/$target"
+          test "$(git ls-remote --heads origin "refs/heads/$target" | cut -f1)" = "$commit"
+          echo "source=$commit" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/publication"
+          printf '%s\n%s\n' "$commit" f513bedb4b276741ba872d08a4ef0887563270b1 > "$RUNNER_TEMP/publication/identity.txt"
+          git diff --cached --full-index --binary > "$RUNNER_TEMP/publication/source.patch"
+          git ls-tree -r f513bedb4b276741ba872d08a4ef0887563270b1 > "$RUNNER_TEMP/publication/source.tree"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ordered-set-publication
+          path: ${{ runner.temp }}/publication
+          if-no-files-found: error
+          retention-days: 30
+  linux:
+    needs: publish
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.source }}
+          persist-credentials: false
+      - name: Exact-source full Linux suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$RUNNER_TEMP/evidence"
+          git rev-parse HEAD HEAD^{tree} | tee "$RUNNER_TEMP/evidence/identity.txt"
+          test "$(git rev-parse HEAD^{tree})" = f513bedb4b276741ba872d08a4ef0887563270b1
+          swift --version | tee "$RUNNER_TEMP/evidence/toolchain.txt"
+          swift test -j 4 2>&1 | tee "$RUNNER_TEMP/evidence/debug.log"
+          swift test -j 4 -c release 2>&1 | tee "$RUNNER_TEMP/evidence/release.log"
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$RUNNER_TEMP/evidence/asan.log"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git status --porcelain --untracked-files=all > "$RUNNER_TEMP/evidence/status.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ordered-set-native-linux
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 30
+  macos:
+    needs: publish
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.source }}
+          persist-credentials: false
+      - name: Exact-source full Apple suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          git rev-parse HEAD HEAD^{tree} | tee "$RUNNER_TEMP/evidence/identity.txt"
+          test "$(git rev-parse HEAD^{tree})" = f513bedb4b276741ba872d08a4ef0887563270b1
+          swift --version | tee "$RUNNER_TEMP/evidence/toolchain.txt"
+          xcodebuild -version | tee "$RUNNER_TEMP/evidence/xcode.txt"
+          swift test -j 4 2>&1 | tee "$RUNNER_TEMP/evidence/debug.log"
+          swift test -j 4 -c release 2>&1 | tee "$RUNNER_TEMP/evidence/release.log"
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$RUNNER_TEMP/evidence/asan.log"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git status --porcelain --untracked-files=all > "$RUNNER_TEMP/evidence/status.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ordered-set-native-macos
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 30
