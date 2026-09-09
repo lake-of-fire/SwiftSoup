@@ -5,7 +5,9 @@ internal extension Attribute {
     func observeMutations(in owner: Attributes) {
         mutationOwners?.removeAll { reference in
             guard let existing = reference.value else { return true }
-            return !existing.attributes.contains { $0 === self }
+            // The caller is registering an attribute already in this owner. Avoid
+            // rescanning its array for every item returned by asList / iteration.
+            return existing !== owner && !existing.attributes.contains { $0 === self }
         }
         if mutationOwners?.contains(where: { $0.value === owner }) == true { return }
         if mutationOwners == nil { mutationOwners = [] }

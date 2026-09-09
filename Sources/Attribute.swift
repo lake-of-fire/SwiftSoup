@@ -422,7 +422,8 @@ open class Attribute {
     @inline(__always)
     public func hashCode() -> Int {
         var result = keySlice.hashValue
-        result = 31 * result + valueSliceMaterialized().hashValue
+        // Hash mixing intentionally wraps; checked arithmetic can trap for ordinary keys.
+        result = (31 &* result) &+ valueSliceMaterialized().hashValue
         return result
     }
     
