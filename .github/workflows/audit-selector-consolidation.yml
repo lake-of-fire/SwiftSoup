@@ -1,0 +1,138 @@
+name: Selector consolidation verification
+on:
+  push:
+    branches: [audit/selector-consolidation-20260909]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.publish.outputs.commit }}
+    steps:
+      - name: Install source reconstruction prerequisite
+        run: apt-get update -qq && apt-get install -y -qq python3
+      - uses: actions/checkout@v4
+        with:
+          ref: 7597b86a54ba53b4c1824d2fd5d95d844817d196
+          path: transport
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2
+          path: source
+      - name: Reconstruct exact four-file product change
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/source"
+          test "$(git rev-parse HEAD)" = ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2
+          test "$(git rev-parse HEAD^{tree})" = 984d978099ea528fe74facd4157a784088b262ec
+          mkdir -p "$RUNNER_TEMP/selector-publication"
+          python3 ../transport/audit-selector-apply.py
+          cp ../transport/Tests/SwiftSoupTests/CompoundSelectorSpellingTest.swift Tests/SwiftSoupTests/
+          cp ../transport/Tests/SwiftSoupTests/TextEscapeParityTest.swift Tests/SwiftSoupTests/
+          git add CHANGELOG.md Sources/TokenQueue.swift Tests/SwiftSoupTests/CompoundSelectorSpellingTest.swift Tests/SwiftSoupTests/TextEscapeParityTest.swift
+          git diff --cached --check
+          test "$(git write-tree)" = 8bda9a23de45f37cfad019d9100e95c50341c45e
+          git diff --cached --full-index --binary > "$RUNNER_TEMP/selector-publication/selector-fixes.patch"
+          echo "e81fae3246811f5cfffcf0a3fdd4cdc14253cc4baadecc1ab80f79f7faedec92  $RUNNER_TEMP/selector-publication/selector-fixes.patch" | sha256sum --check -
+      - name: Full release qualification before publication
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift --version | tee "$RUNNER_TEMP/selector-publication/toolchain.txt"
+          swift test -j 4 -c release 2>&1 | tee "$RUNNER_TEMP/selector-publication/release.log"
+          git diff --exit-code
+          test "$(git write-tree)" = 8bda9a23de45f37cfad019d9100e95c50341c45e
+      - name: Publish source-only child without force
+        id: publish
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          commit=$(git commit-tree 8bda9a23de45f37cfad019d9100e95c50341c45e -p ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2 -m 'Preserve compound selector spelling and decode paired text escapes')
+          test "$(git rev-parse "$commit^{tree}")" = 8bda9a23de45f37cfad019d9100e95c50341c45e
+          git push origin "$commit:refs/heads/fix/selector-spelling-and-text-escapes-20260909"
+          printf '%s\n' "$commit" > "$RUNNER_TEMP/selector-publication/commit.txt"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selector-publication
+          path: ${{ runner.temp }}/selector-publication/
+          if-no-files-found: error
+          retention-days: 14
+  linux:
+    needs: publish
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.commit }}
+          persist-credentials: false
+      - name: Verify actual committed source in every configuration
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.publish.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = 8bda9a23de45f37cfad019d9100e95c50341c45e
+          mkdir -p "$RUNNER_TEMP/selector-validation"
+          { git rev-parse HEAD HEAD^{tree}; swift --version; } | tee "$RUNNER_TEMP/selector-validation/identity.txt"
+          swift test -j 4 2>&1 | tee "$RUNNER_TEMP/selector-validation/debug.log"
+          swift test -j 4 -c release 2>&1 | tee "$RUNNER_TEMP/selector-validation/release.log"
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$RUNNER_TEMP/selector-validation/asan.log"
+          status=$(git status --porcelain)
+          test -z "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selector-linux
+          path: ${{ runner.temp }}/selector-validation/
+          if-no-files-found: error
+          retention-days: 14
+  macos:
+    needs: publish
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.commit }}
+          persist-credentials: false
+      - name: Verify actual committed source in every configuration
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.publish.outputs.commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = 8bda9a23de45f37cfad019d9100e95c50341c45e
+          mkdir -p "$RUNNER_TEMP/selector-validation"
+          { git rev-parse HEAD HEAD^{tree}; swift --version; } | tee "$RUNNER_TEMP/selector-validation/identity.txt"
+          swift test -j 4 2>&1 | tee "$RUNNER_TEMP/selector-validation/debug.log"
+          swift test -j 4 -c release 2>&1 | tee "$RUNNER_TEMP/selector-validation/release.log"
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$RUNNER_TEMP/selector-validation/asan.log"
+          status=$(git status --porcelain)
+          test -z "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selector-macos
+          path: ${{ runner.temp }}/selector-validation/
+          if-no-files-found: error
+          retention-days: 14
