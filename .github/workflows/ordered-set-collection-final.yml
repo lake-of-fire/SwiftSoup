@@ -1,0 +1,73 @@
+name: Exact current ordered-set collection qualification
+on:
+  push:
+    branches: [audit/ordered-set-handoff-v2-20260909]
+    paths: [.github/workflows/ordered-set-collection-final.yml]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: swift:6.1
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          persist-credentials: false
+      - name: Exact current source full Linux suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/collection-linux"
+          mkdir -p "$E"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git rev-parse HEAD HEAD^{tree} > "$E/identity.txt"
+          test "$(git rev-parse HEAD)" = 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          test "$(git rev-parse HEAD^{tree})" = c175bef3bd8b5420aaa7827794e819e1287fa5cd
+          git ls-tree -r HEAD > "$E/tree.txt"
+          swift --version > "$E/toolchain.txt"
+          swift test -j 4 > "$E/debug.log" 2>&1
+          swift test -j 4 -c release > "$E/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$E/asan.log" 2>&1
+          git status --porcelain --untracked-files=all > "$E/status.txt"
+          test ! -s "$E/status.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collection-current-linux
+          path: ${{ runner.temp }}/collection-linux
+          if-no-files-found: error
+          retention-days: 30
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          persist-credentials: false
+      - name: Exact current source full Apple suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/collection-macos"
+          mkdir -p "$E"
+          git rev-parse HEAD HEAD^{tree} > "$E/identity.txt"
+          test "$(git rev-parse HEAD)" = 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          test "$(git rev-parse HEAD^{tree})" = c175bef3bd8b5420aaa7827794e819e1287fa5cd
+          git ls-tree -r HEAD > "$E/tree.txt"
+          swift --version > "$E/toolchain.txt"
+          xcodebuild -version > "$E/xcode.txt"
+          swift test -j 4 > "$E/debug.log" 2>&1
+          swift test -j 4 -c release > "$E/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$E/asan.log" 2>&1
+          git status --porcelain --untracked-files=all > "$E/status.txt"
+          test ! -s "$E/status.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collection-current-macos
+          path: ${{ runner.temp }}/collection-macos
+          if-no-files-found: error
+          retention-days: 30
