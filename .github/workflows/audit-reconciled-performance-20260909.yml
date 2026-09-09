@@ -1,0 +1,97 @@
+name: Verify reconciled DOM performance
+on:
+  push:
+    branches: [audit/export-and-verify-20260909]
+    paths: [.github/workflows/audit-reconciled-performance-20260909.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    timeout-minutes: 20
+    outputs:
+      source_sha: ${{ steps.publish.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct the exact locally tested semantic merge
+        run: |
+          set -euo pipefail
+          cp audit-reconciled-performance.patch "$RUNNER_TEMP/resolutions.patch"
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          git checkout --detach 12b06d62a7f5208fea5eb59e9e143d7d80a1e749
+          test "$(git rev-parse HEAD^{tree})" = 4d5afc95057abf2749c97a299c3c5d92a7d1d946
+          if git merge --no-commit --no-ff 2d83721fee3ccbe3117a63d231ac6b9b3b195c8b; then
+            echo 'Expected the reviewed Attributes conflict' >&2
+            exit 1
+          fi
+          test "$(git diff --name-only --diff-filter=U)" = Sources/Attributes.swift
+          git checkout --ours -- Sources/Attributes.swift
+          git add Sources/Attributes.swift
+          git apply --check "$RUNNER_TEMP/resolutions.patch"
+          git apply "$RUNNER_TEMP/resolutions.patch"
+          git add Sources Tests
+          git diff --cached --check
+          git write-tree
+          test "$(git write-tree)" = 1ec731f45fee4ca856634d2bee8082e13083fe97
+      - name: Test reconstructed production and compatibility suites
+        run: |
+          set -euo pipefail
+          swift --version
+          swift test -c release 2>&1 | tee "$RUNNER_TEMP/performance-release.log"
+      - name: Publish source-only merge on a new branch
+        id: publish
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = 1ec731f45fee4ca856634d2bee8082e13083fe97
+          sha=$(git commit-tree 1ec731f45fee4ca856634d2bee8082e13083fe97 -p 12b06d62a7f5208fea5eb59e9e143d7d80a1e749 -p 2d83721fee3ccbe3117a63d231ac6b9b3b195c8b -m 'Reconcile DOM optimizations with clone isolation and text-cache invalidation')
+          git push origin "$sha:refs/heads/perf/reconciled-dom-20260909"
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$sha" > "$RUNNER_TEMP/performance-source-sha.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-performance-publication
+          path: |
+            ${{ runner.temp }}/performance-release.log
+            ${{ runner.temp }}/performance-source-sha.txt
+          retention-days: 30
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - name: Verify actual published tree in debug and release
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD^{tree})" = 1ec731f45fee4ca856634d2bee8082e13083fe97
+          swift --version
+          swift test 2>&1 | tee "$RUNNER_TEMP/performance-debug.log"
+          swift test -c release 2>&1 | tee "$RUNNER_TEMP/performance-release.log"
+          test -z "$(git status --porcelain)"
+      - name: AddressSanitizer on published production tree
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          set -euo pipefail
+          swift test -c release --sanitize address 2>&1 | tee "$RUNNER_TEMP/performance-asan.log"
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-performance-${{ matrix.os }}
+          path: ${{ runner.temp }}/performance-*.log
+          retention-days: 30
