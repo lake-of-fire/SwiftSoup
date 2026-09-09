@@ -17,30 +17,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: 272f204ac99a69a5180a703094040ac32cba1d68
+          path: transport
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
           ref: f3c7052d8614e0d7a1d6ced70351a8eb68392499
+          path: source
       - name: Reconstruct exact source-only tree
+        working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/source"
           test "$(git rev-parse HEAD)" = f3c7052d8614e0d7a1d6ced70351a8eb68392499
           test "$(git rev-parse HEAD^{tree})" = 175028e6012e84a420c87b951fe9948e53d317db
           mkdir -p "$RUNNER_TEMP/nth-evidence"
           python3 - <<'PY'
-          import base64, gzip, hashlib, os, pathlib
-          payload = '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'
+          import base64, gzip, hashlib, os, pathlib, re
+          old = pathlib.Path('../transport/.github/workflows/audit-nth-selector.yml').read_text()
+          payload, = re.findall(r"payload = '([^']+)'", old)
+          out = pathlib.Path(os.environ['RUNNER_TEMP'], 'nth-evidence')
+          (out / 'original-transport.base64').write_text(payload)
+          for before, after in [('WI+m0VxJfKa4', 'WI+m0VxklKa4'), ('SpAVbFCII+PH', 'SpAVbFCI+PH'), ('OUULSKSK85', 'OUULSKS85')]:
+              assert payload.count(before) == 1, before
+              payload = payload.replace(before, after)
+          (out / 'corrected-transport.base64').write_text(payload)
           patch = gzip.decompress(base64.b64decode(payload, validate=True))
           assert len(patch) == 20610
           assert hashlib.sha256(patch).hexdigest() == '13a9d7222eecdef19a9f5dd8ea3ef8d97c6466c8ecb6c8f7036b3c7ae14c8ada'
-          pathlib.Path(os.environ['RUNNER_TEMP'], 'nth-fix.patch').write_bytes(patch)
+          (out / 'nth-fix.patch').write_bytes(patch)
           PY
-          git apply --check "$RUNNER_TEMP/nth-fix.patch"
-          git apply "$RUNNER_TEMP/nth-fix.patch"
+          git apply --check "$RUNNER_TEMP/nth-evidence/nth-fix.patch"
+          git apply "$RUNNER_TEMP/nth-evidence/nth-fix.patch"
           git add Sources/QueryParser.swift Sources/Evaluator.swift Tests/SwiftSoupTests/NthSelectorBoundaryTest.swift CHANGELOG.md
           git diff --cached --check
           test "$(git write-tree)" = 2c727ad6ece730759ea2df1b3f63beb9102b94d6
           git diff --cached --stat > "$RUNNER_TEMP/nth-evidence/scope.txt"
       - name: Release qualification before publication
+        working-directory: source
         shell: bash
         run: |
           set -euo pipefail
@@ -50,6 +65,7 @@ jobs:
           git diff --exit-code
       - name: Publish source-only child without force
         id: publish
+        working-directory: source
         shell: bash
         run: |
           set -euo pipefail
