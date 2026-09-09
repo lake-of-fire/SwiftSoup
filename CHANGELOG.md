@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+* Return each element once from class indexes even when `class` repeats a token or case variant. Preserve traversal order in both combined and class-only rebuilds.
+* Distinguish missing physical attributes from present empty values in equality, inequality, and regex predicates. Empty prefix/suffix/substring operands now match nothing, as required by CSS; existing SwiftSoup case/whitespace normalization is otherwise unchanged.
+* Keep attribute fast plans consistent with the parser by delegating non-ASCII attribute selectors to it. Preserve parsed virtual `abs:` predicates with quoted empty operands, and recognize padded `abs:` keys in the public value getter.
+* Honor case-preserving attribute updates in byte-slice predicates without dropping the lowercase-key fast path. Direct mutation of an `Attribute` object obtained from the collection still has a separate, pre-existing owner/cache-invalidation limitation; use `Element.attr` / `removeAttr` for indexed DOM updates.
+* Preserve value and regex predicates when an attribute-presence index seeds a compound selector. Presence alone does not prove a prefix, suffix, substring, or regex match. Keep exact-index shortcuts and check single-predicate `And` evaluators consistently.
+* Resolve virtual `abs:` attribute presence through `hasAttr`, not the physical attribute-name index, and invalidate affected ancestor/subtree selector results when the base URI changes. Physical attribute indexes and text caches remain intact.
+* Route unescaped punctuation in bare ID selectors through the parser, matching compound-selector validation. Literal punctuation in an ID must be escaped (for example `#x\]` for ID `x]`) or supplied through `getElementById`.
+* Treat `getElementById` arguments as literal IDs, retaining leading/trailing whitespace. Callers that intentionally accepted padded input must now trim it themselves. Recognize form feed as a descendant combinator rather than an ID byte in the selector fast path.
+* Preserve escaped trailing spaces and non-ASCII identifier content while removing CSS query padding, including direct parser and multi-root selection paths.
+* Scan balanced and compound selectors at code-point boundaries; handle backslash parity and paired quote delimiters correctly. Unicode prepend characters no longer absorb closing parentheses or combinators. The public balanced scanner still supports multi-scalar delimiters.
+* Match class tokens, never an entire whitespace-separated class list. Use HTML's five ASCII whitespace separators consistently in class getters, predicates, and indexes; vertical tab (U+000B) remains part of a class token.
+* Preserve byte-distinct Unicode selector spellings in the parser, evaluator, fast-plan, and per-root result caches. Custom `QueryParserCache` implementations must also use code-point-exact key equality rather than Swift's canonical-equivalence equality.
+* Generate ID/class escapes by Unicode scalar, preserving combining marks (including immediately after `#`/`.`), emoji, leading digits, controls, and literal backslashes. Escape spaces as code points so query trimming does not remove significant trailing spaces. CSS represents U+0000 as U+FFFD, not as a literal NUL.
+* Preserve whitespace decoded from ID escapes during indexed selection. Anchor `:has(> ...)` against each candidate element and avoid the collect-once shortcut for root-dependent predicates.
+* Decode CSS hexadecimal escapes in ID and class selectors: one to six hex digits, one optional CSS whitespace terminator (including CRLF), and U+FFFD for zero, surrogate, or out-of-range code points. Preserve the complete escape when splitting compound selectors.
+* Compatibility: `p#\61` now matches ID `a`, not ID `61`. Clients that intended the old literal value should use `p#61` or `p#\36 1`; an ID containing a literal backslash followed by `61` is selected by `p#\\61`. ID/class parsing also accepts non-ASCII identifier code points so combining marks following hex digits are retained. Existing non-hex escapes remain supported. This does not change tag/attribute escape parsing or the separate text/regex unescape behavior.
+
 ## [2.3.2](https://github.com/scinfu/SwiftSoup/tree/2.3.2)
 * Renamed Selector Class to CssSelector
 

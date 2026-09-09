@@ -48,6 +48,7 @@ public class QueryParser {
      - seealso: ``cache``
      */
     public static func parse(_ query: String)throws->Evaluator {
+        let query = TokenQueue.trimCssQuery(query)
         let cache = Self.cache
         if let cached = cache?.get(query) {
             return cached
@@ -161,34 +162,13 @@ public class QueryParser {
     }
 
     private func consumeSubQuery() -> String {
-        var sq = ""
-        while (!tq.isEmpty()) {
-            if tq.matchesCS("\\") {
-                sq.append(tq.consume())
-                if !tq.isEmpty() {
-                    sq.append(tq.consume())
-                }
-            } else if (tq.matches("(")) {
-                sq.append("(")
-                sq.append(tq.chompBalanced("(", ")"))
-                sq.append(")")
-            } else if (tq.matches("[")) {
-                sq.append("[")
-                sq.append(tq.chompBalanced("[", "]"))
-                sq.append("]")
-            } else if (tq.matchesAny(QueryParser.combinators)) {
-                break
-            } else {
-                sq.append(tq.consume())
-            }
-        }
-        return sq
+        return tq.consumeCssSubQuery()
     }
 
     private func findElements() throws {
-        if (tq.matchChomp("#")) {
+        if (tq.matchChompCssIdentifierPrefix(0x23)) {
             try byId()
-        } else if (tq.matchChomp(".")) {
+        } else if (tq.matchChompCssIdentifierPrefix(0x2E)) {
             try byClass()} else if (tq.matchesWord() || tq.matches("*|")) {try byTag()} else if (tq.matches("[")) {try byAttribute()} else if (tq.matchChomp("*")) { allElements()} else if (tq.matchChomp(":lt(")) {try indexLessThan()} else if (tq.matchChomp(":gt(")) {try indexGreaterThan()} else if (tq.matchChomp(":eq(")) {try indexEquals()} else if (tq.matches(":has(")) {try has()} else if (tq.matches(":containsData(")) {try containsData()} else if (tq.matches(":contains(")) {try contains(false)} else if (tq.matches(":containsOwn(")) {try contains(true)} else if (tq.matches(":matches(")) {try matches(false)} else if (tq.matches(":matchesOwn(")) {try matches(true)} else if (tq.matches(":not(")) {try not()} else if (tq.matchChomp(":nth-child(")) {try cssNthChild(false, false)} else if (tq.matchChomp(":nth-last-child(")) {try cssNthChild(true, false)} else if (tq.matchChomp(":nth-of-type(")) {try cssNthChild(false, true)} else if (tq.matchChomp(":nth-last-of-type(")) {try cssNthChild(true, true)} else if (tq.matchChomp(":first-child")) {evals.append(Evaluator.IsFirstChild())} else if (tq.matchChomp(":last-child")) {evals.append(Evaluator.IsLastChild())} else if (tq.matchChomp(":first-of-type")) {evals.append(Evaluator.IsFirstOfType())} else if (tq.matchChomp(":last-of-type")) {evals.append(Evaluator.IsLastOfType())} else if (tq.matchChomp(":only-child")) {evals.append(Evaluator.IsOnlyChild())} else if (tq.matchChomp(":only-of-type")) {evals.append(Evaluator.IsOnlyOfType())} else if (tq.matchChomp(":empty")) {evals.append(Evaluator.IsEmpty())} else if (tq.matchChomp(":root")) {evals.append(Evaluator.IsRoot())} else // unhandled
         {
             throw Exception.Error(type: ExceptionType.SelectorParseException, Message: "Could not parse query \(query): unexpected token at \(tq.remainder())")
@@ -204,7 +184,8 @@ public class QueryParser {
     private func byClass() throws {
         let className: String = tq.consumeCssIdentifier()
         try Validate.notEmpty(string: className)
-        evals.append(Evaluator.Class(className.trim()))
+        // Whitespace decoded from an escape is identifier content, not query padding.
+        evals.append(Evaluator.Class(className))
     }
 
     private func byTag() throws {

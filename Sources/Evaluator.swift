@@ -244,7 +244,6 @@ open class Evaluator: @unchecked Sendable {
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             if let slice = element.attrSlice(keyBytes) {
-                if slice.isEmpty { return false }
                 let needsTrim = (slice.first?.isWhitespace ?? false) || (slice.last?.isWhitespace ?? false)
                 let candidate = needsTrim ? slice.trim() : slice
                 return StringUtil.equalsIgnoreCase(valueBytes, candidate)
@@ -275,7 +274,6 @@ open class Evaluator: @unchecked Sendable {
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             if let slice = element.attrSlice(keyBytes) {
-                if slice.isEmpty { return true }
                 return !StringUtil.equalsIgnoreCase(valueBytes, slice)
             }
             if !Element.isAbsAttributeKey(keyBytes) {
@@ -301,6 +299,8 @@ open class Evaluator: @unchecked Sendable {
         }
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
+            // CSS substring selectors with an empty operand match nothing.
+            guard !valueBytes.isEmpty else { return false }
             if let slice = element.attrSlice(keyBytes) {
                 if slice.isEmpty { return false }
                 if StringUtil.isAscii(slice),
@@ -337,6 +337,8 @@ open class Evaluator: @unchecked Sendable {
         }
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
+            // CSS substring selectors with an empty operand match nothing.
+            guard !valueBytes.isEmpty else { return false }
             if let slice = element.attrSlice(keyBytes) {
                 if slice.isEmpty { return false }
                 if StringUtil.isAscii(slice),
@@ -373,6 +375,8 @@ open class Evaluator: @unchecked Sendable {
         }
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
+            // CSS substring selectors with an empty operand match nothing.
+            guard !valueBytes.isEmpty else { return false }
             if let slice = element.attrSlice(keyBytes) {
                 if slice.isEmpty { return false }
                 if StringUtil.isAscii(slice),
@@ -417,7 +421,6 @@ open class Evaluator: @unchecked Sendable {
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             if let slice = element.attrSlice(keyBytes) {
-                if slice.isEmpty { return false }
                 let string = slice.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
                 return pattern.matcher(in: string).find()
             }

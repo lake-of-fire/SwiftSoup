@@ -10,6 +10,10 @@ import Foundation
 
 
 /// Protocol for ``QueryParser`` caches.
+///
+/// Cache keys must preserve the query's exact Unicode code points. Swift String
+/// equality treats canonically equivalent spellings as equal, but CSS identifier
+/// matching does not; custom caches should use byte-exact key equality.
 public protocol QueryParserCache: AnyObject, Sendable {
 
     /// Get a cached evaluator for a given query.
@@ -56,7 +60,7 @@ public extension QueryParser {
         }
 
         /// Actual cache implementation.
-        private let cache: LRUCache<String, Evaluator>
+        private let cache: LRUCache<SelectorQueryKey, Evaluator>
         private let cacheLock = Mutex()
 
         /// Initialize using an explicit limit.
@@ -77,13 +81,13 @@ public extension QueryParser {
         public func get(_ query: String) -> Evaluator? {
             cacheLock.lock()
             defer { cacheLock.unlock() }
-            return cache.value(forKey: query)
+            return cache.value(forKey: SelectorQueryKey(query))
         }
 
         public func set(_ query: String, _ evaluator: Evaluator) {
             cacheLock.lock()
             defer { cacheLock.unlock() }
-            cache.setValue(evaluator, forKey: query)
+            cache.setValue(evaluator, forKey: SelectorQueryKey(query))
         }
     }
 

@@ -79,21 +79,21 @@ open class CssSelector {
     
     private static let selectorCacheCapacity: Int = 128
     private final class SelectorCache: @unchecked Sendable {
-        var items: [String: Evaluator] = [:]
-        var order: [String] = []
+        var items: [SelectorQueryKey: Evaluator] = [:]
+        var order: [SelectorQueryKey] = []
         let lock = NSLock()
     }
     private static let selectorCache = SelectorCache()
     private static let fastQueryCacheCapacity: Int = selectorCacheCapacity
     private final class FastQueryCache: @unchecked Sendable {
-        var items: [String: FastQueryPlan] = [:]
-        var order: [String] = []
+        var items: [SelectorQueryKey: FastQueryPlan] = [:]
+        var order: [SelectorQueryKey] = []
         let lock = NSLock()
     }
     private static let fastQueryCache = FastQueryCache()
 
     private init(_ query: String, _ root: Element)throws {
-        let query = query.trim()
+        let query = TokenQueue.trimCssQuery(query)
         try Validate.notEmpty(string: query.utf8Array)
 
         self.evaluator = try CssSelector.cachedEvaluatorTrimmed(query)
@@ -115,7 +115,7 @@ open class CssSelector {
      - throws ``Exception`` with ``ExceptionType/SelectorParseException`` (unchecked) on an invalid CSS query.
      */
     public static func select(_ query: String, _ root: Element)throws->Elements {
-        let query = query.trim()
+        let query = TokenQueue.trimCssQuery(query)
         try Validate.notEmpty(string: query.utf8Array)
         DebugTrace.log("CssSelector.select(query): \(query)")
         if let cached = root.cachedSelectorResult(query) {
@@ -159,7 +159,7 @@ open class CssSelector {
      - returns: matching elements, empty if none
      */
     public static func select(_ query: String, _ roots: Array<Element>)throws->Elements {
-        let query = query.trim()
+        let query = TokenQueue.trimCssQuery(query)
         try Validate.notEmpty(string: query.utf8Array)
         if roots.count == 1, let root = roots.first {
             if let cached = root.cachedSelectorResult(query) {
@@ -241,7 +241,8 @@ open class CssSelector {
         return try Collector.collect(evaluator, root)
     }
     
-    private static func cachedEvaluatorTrimmed(_ key: String) throws -> Evaluator {
+    private static func cachedEvaluatorTrimmed(_ query: String) throws -> Evaluator {
+        let key = SelectorQueryKey(query)
         selectorCache.lock.lock()
         if let cached = selectorCache.items[key] {
             selectorCache.lock.unlock()
@@ -249,7 +250,7 @@ open class CssSelector {
         }
         selectorCache.lock.unlock()
         
-        let parsed = try QueryParser.parse(key)
+        let parsed = try QueryParser.parse(query)
         
         selectorCache.lock.lock()
         if selectorCache.items[key] == nil {
@@ -554,8 +555,9 @@ open class CssSelector {
     }
 
     private static func cachedFastQueryPlan(_ trimmed: String) -> FastQueryPlan {
+        let key = SelectorQueryKey(trimmed)
         fastQueryCache.lock.lock()
-        if let cached = fastQueryCache.items[trimmed] {
+        if let cached = fastQueryCache.items[key] {
             fastQueryCache.lock.unlock()
             DebugTrace.log("CssSelector.cachedFastQueryPlan: cache hit")
             return cached
@@ -566,9 +568,9 @@ open class CssSelector {
         let plan = fastQueryPlan(trimmed)
         
         fastQueryCache.lock.lock()
-        if fastQueryCache.items[trimmed] == nil {
-            fastQueryCache.items[trimmed] = plan
-            fastQueryCache.order.append(trimmed)
+        if fastQueryCache.items[key] == nil {
+            fastQueryCache.items[key] = plan
+            fastQueryCache.order.append(key)
             if fastQueryCache.order.count > fastQueryCacheCapacity {
                 let overflow = fastQueryCache.order.count - fastQueryCacheCapacity
                 if overflow > 0 {
@@ -807,38 +809,18 @@ open class CssSelector {
             if id.isEmpty {
                 return .none
             }
-            var asciiOnly = true
+            // Only literal identifier bytes are safe here. Escapes and syntax
+            // must use the same parser as compound selectors, even when the
+            // document contains an ID equal to the unparsed query text.
             var bytes: [UInt8] = []
-            bytes.reserveCapacity(id.count)
-            for b in id.utf8 {
-                bytes.append(b)
-                if b >= TokeniserStateVars.asciiUpperLimitByte {
-                    asciiOnly = false
-                    continue
-                }
-                switch b {
-                case TokeniserStateVars.spaceByte,
-                     TokeniserStateVars.tabByte,
-                     TokeniserStateVars.newLineByte,
-                     TokeniserStateVars.carriageReturnByte,
-                     TokeniserStateVars.commaByte,
-                     TokeniserStateVars.greaterThanByte,
-                     TokeniserStateVars.plusByte,
-                     TokeniserStateVars.tildeByte,
-                     TokeniserStateVars.colonByte,
-                     TokeniserStateVars.dotByte,
-                     TokeniserStateVars.leftBracketByte,
-                     TokeniserStateVars.hashByte:
-                    return .none
-                default:
-                    break
-                }
+            bytes.reserveCapacity(id.utf8.count)
+            for byte in id.utf8 {
+                guard byte >= 0x80 || byte == 0x2D || byte == 0x5F ||
+                    (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) ||
+                    (0x61...0x7A).contains(byte) else { return .none }
+                bytes.append(byte)
             }
-            let idBytes = asciiOnly ? bytes : bytes.trim()
-            if !idBytes.isEmpty {
-                return .id(idBytes)
-            }
-            return .none
+            return .id(bytes)
         }
         if trimmed.first == "." {
             let className = trimmed.dropFirst()
@@ -899,6 +881,10 @@ open class CssSelector {
         }
         
         if let open = trimmed.firstIndex(of: "[") {
+            // The byte fast path only implements ASCII normalization. Delegate
+            // Unicode keys/values to the parser instead of selecting a different
+            // value when Unicode lowercasing or trimming changes the query.
+            guard trimmed.utf8.allSatisfy({ $0 < 0x80 }) else { return .none }
             // Find the matching close bracket for the first '[', skipping quoted content.
             // This correctly bails out for compound selectors like tag[a='x'][b='y'].
             var scanIdx = trimmed.index(after: open)
@@ -1129,6 +1115,9 @@ open class CssSelector {
             return root.getElementsByAttributeNormalized(eval.keyBytes)
         }
         if let eval = evaluator as? Evaluator.AttributeWithValue {
+            // Keep the already-parsed predicate for virtual attributes. Rebuilding
+            // it from normalized strings would lose valid quoted empty operands.
+            guard !eval.keyBytes.starts(with: UTF8Arrays.absPrefix) else { return nil }
             return try root.getElementsByAttributeValueNormalized(
                 eval.keyBytes,
                 eval.valueBytes,
