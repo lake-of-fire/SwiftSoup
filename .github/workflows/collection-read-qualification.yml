@@ -1,0 +1,165 @@
+name: Qualify independent singleton output and sibling endpoints
+on:
+  push:
+    branches: [review/collection-read-qualification-20260909]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: aggregate
+            tree: 0bf4200c5b7c6b79512d701eb7ce77f34dd483b5
+            branch: perf/single-result-output-20260909
+          - kind: endpoints
+            tree: f73058258d742bbe3ad578fba8476b34cffc14e2
+            branch: perf/sibling-endpoint-read-20260909
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct exact frozen source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$RUNNER_TEMP/evidence"
+          bash Study/CollectionReads/prepare.sh '${{ matrix.kind }}' "$RUNNER_TEMP/candidate"
+          cd "$RUNNER_TEMP/candidate"
+          git diff --cached --binary > "$RUNNER_TEMP/evidence/change.patch"
+          git ls-files -s > "$RUNNER_TEMP/evidence/staged-files.txt"
+          swift --version > "$RUNNER_TEMP/evidence/toolchain.txt"
+      - name: Full release and AddressSanitizer debug suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          swift test -j 4 -c release > "$RUNNER_TEMP/evidence/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$RUNNER_TEMP/evidence/asan.log" 2>&1
+          git diff --exit-code
+          test "$(git write-tree)" = '${{ matrix.tree }}'
+          test -z "$(git ls-files --others --exclude-standard)"
+          tail -12 "$RUNNER_TEMP/evidence/release.log"
+          tail -12 "$RUNNER_TEMP/evidence/asan.log"
+      - name: Broad baseline and candidate benchmark regression guards
+        shell: bash
+        env:
+          SWIFTSOUP_BENCHMARK: '1'
+          SWIFTSOUP_BENCHMARK_SET: base,large
+          SWIFTSOUP_BENCHMARK_REPEAT: '200'
+          SWIFTSOUP_BENCHMARK_LARGE_REPEAT: '60'
+          SWIFTSOUP_BENCHMARK_WARMUP: '2'
+          SWIFTSOUP_BENCHMARK_ITERATIONS: '500'
+          SWIFTSOUP_BENCHMARK_ITERATIONS_MULTIPLIER: '1'
+          SWIFTSOUP_BENCHMARK_SELECTOR_REPEAT: '1'
+          SWIFTSOUP_BENCHMARK_SELECTOR_STRESS_REPEAT: '1'
+          SWIFTSOUP_BENCHMARK_ATTRIBUTE_SELECTOR_STRESS_REPEAT: '1'
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$RUNNER_TEMP/baseline"
+          git worktree add --detach "$RUNNER_TEMP/baseline" 97e071d6d42794ebbca7716a22605176325c6445
+          cd "$RUNNER_TEMP/baseline"
+          swift test -j 4 -c release --filter BenchmarkProfileTest/testParseBenchmarkProfile > "$RUNNER_TEMP/evidence/broad-baseline.log" 2>&1
+          test -z "$(git status --porcelain)"
+          cd "$RUNNER_TEMP/candidate"
+          swift test -j 4 -c release --filter BenchmarkProfileTest/testParseBenchmarkProfile > "$RUNNER_TEMP/evidence/broad-candidate.log" 2>&1
+          git diff --exit-code
+          test "$(git write-tree)" = '${{ matrix.tree }}'
+      - name: Publish only a new source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          test "$(git write-tree)" = '${{ matrix.tree }}'
+          test -z "$(git ls-remote --heads origin 'refs/heads/${{ matrix.branch }}')"
+          git -c user.name='Alex Ehlke' -c user.email='alex.ehlke@gmail.com' commit -m 'Avoid unnecessary collection construction for ${{ matrix.kind }} reads'
+          test "$(git show -s --format=%P HEAD)" = 97e071d6d42794ebbca7716a22605176325c6445
+          git push origin HEAD:'refs/heads/${{ matrix.branch }}'
+          git rev-parse HEAD > "$RUNNER_TEMP/evidence/commit.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/evidence/tree.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/evidence/source.tree"
+          git archive HEAD | gzip > "$RUNNER_TEMP/evidence/source.tar.gz"
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collection-reads-linux-${{ matrix.kind }}
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30
+  apple:
+    needs: publish
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: aggregate
+            tree: 0bf4200c5b7c6b79512d701eb7ce77f34dd483b5
+            branch: perf/single-result-output-20260909
+            stem: aggregate_output
+          - kind: endpoints
+            tree: f73058258d742bbe3ad578fba8476b34cffc14e2
+            branch: perf/sibling-endpoint-read-20260909
+            stem: sibling_endpoints
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 0
+      - name: Qualify actual published source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          test "$(git rev-parse HEAD^{tree})" = '${{ matrix.tree }}'
+          test "$(git show -s --format=%P HEAD)" = 97e071d6d42794ebbca7716a22605176325c6445
+          git rev-parse HEAD > "$RUNNER_TEMP/evidence/commit.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/evidence/source.tree"
+          swift --version > "$RUNNER_TEMP/evidence/toolchain.txt"
+          sw_vers >> "$RUNNER_TEMP/evidence/toolchain.txt"
+          uname -m >> "$RUNNER_TEMP/evidence/toolchain.txt"
+          swift test -j 4 -c release > "$RUNNER_TEMP/evidence/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$RUNNER_TEMP/evidence/asan.log" 2>&1
+          test -z "$(git status --porcelain)"
+      - name: Build complete shipping libraries and matching public clients
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/baseline" 97e071d6d42794ebbca7716a22605176325c6445
+          for side in baseline candidate; do
+            if [ "$side" = baseline ]; then source="$RUNNER_TEMP/baseline"; else source="$GITHUB_WORKSPACE"; fi
+            library="$RUNNER_TEMP/$side-library"
+            mkdir -p "$library"
+            swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path "$library/SwiftSoup.swiftmodule" "$source"/Sources/*.swift -o "$library/libSwiftSoup.dylib" > "$RUNNER_TEMP/evidence/build-$side.log" 2>&1
+            swiftc -swift-version 6 -O "$GITHUB_WORKSPACE/Tools/benchmark_${{ matrix.stem }}.swift" -I "$library" -L "$library" -lSwiftSoup -o "$library/client" >> "$RUNNER_TEMP/evidence/build-$side.log" 2>&1
+            shasum -a 256 "$library/libSwiftSoup.dylib" "$library/client" >> "$RUNNER_TEMP/evidence/binary-sha256.txt"
+          done
+          test -z "$(git status --porcelain)"
+          test -z "$(git -C "$RUNNER_TEMP/baseline" status --porcelain)"
+      - name: Balanced fresh-process confirmation and true same-binary control
+        shell: bash
+        run: |
+          set -euo pipefail
+          for phase in confirmation aa; do
+            extra=()
+            duration=200
+            if [ "$phase" = aa ]; then extra=(--aa); duration=160; fi
+            python3 -S "Tools/compare_${{ matrix.stem }}.py" --baseline-client "$RUNNER_TEMP/baseline-library/client" --candidate-client "$RUNNER_TEMP/candidate-library/client" --baseline-library "$RUNNER_TEMP/baseline-library" --candidate-library "$RUNNER_TEMP/candidate-library" --output "$RUNNER_TEMP/evidence/$phase" --blocks 8 --ms "$duration" "${extra[@]}" > "$RUNNER_TEMP/evidence/$phase.log" 2>&1
+          done
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collection-reads-apple-${{ matrix.kind }}
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30

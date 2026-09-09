@@ -1,0 +1,34 @@
+diff --git a/Sources/Elements.swift b/Sources/Elements.swift
+index b355318..ebca25b 100644
+--- a/Sources/Elements.swift
++++ b/Sources/Elements.swift
+@@ -212,6 +212,9 @@ open class Elements: NSCopying {
+ 	 - seealso: ``Element/text(_:)``
+ 	*/
+ 	open func text(trimAndNormaliseWhitespace: Bool = true)throws->String {
++		if this.count <= 1 {
++			return try this.first?.text(trimAndNormaliseWhitespace: trimAndNormaliseWhitespace) ?? ""
++		}
+ 		let sb: StringBuilder = StringBuilder()
+ 		for element: Element in this {
+ 			if !sb.isEmpty {
+@@ -249,6 +252,9 @@ open class Elements: NSCopying {
+ 	 - seealso: ``text(trimAndNormaliseWhitespace:)``, ``outerHtml()``
+ 	*/
+ 	open func html()throws->String {
++		if this.count <= 1 {
++			return try this.first?.html() ?? ""
++		}
+ 		let sb: StringBuilder = StringBuilder()
+ 		for element: Element in this {
+ 			if !sb.isEmpty {
+@@ -265,6 +271,9 @@ open class Elements: NSCopying {
+ 	 - seealso: ``text(trimAndNormaliseWhitespace:)``, ``html()``
+ 	*/
+ 	open func outerHtml()throws->String {
++		if this.count <= 1 {
++			return try this.first?.outerHtml() ?? ""
++		}
+ 		let sb: StringBuilder = StringBuilder()
+ 		for element in this {
+ 			if !sb.isEmpty {
