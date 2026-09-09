@@ -868,6 +868,7 @@ open class Element: Node {
         if !isBulkBuilding {
             child.markSourceDirty()
             markSourceDirty()
+            bumpTextMutationVersion()
         }
         return self
     }
@@ -1067,6 +1068,9 @@ open class Element: Node {
     @inline(__always)
     public func empty() -> Element {
         markQueryIndexesDirty()
+        // Retained children remain valid independent subtrees, not phantom
+        // members of this element with obsolete sibling positions.
+        for child in childNodes { child.parentNode = nil }
         childNodes.removeAll()
         bumpTextMutationVersion()
         markSourceDirty()

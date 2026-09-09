@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Keep text-dependent selector caches current after child appends, detach retained children during `empty()` / content replacement, and preserve original insertion gaps when moving existing siblings. Self replacement is a no-op; invalid offsets and cyclic insertions/replacements are rejected before detaching any inputs.
+* Resolve node URLs through the public base-URI byte getter, including absent base URIs, instead of force-unwrapping storage.
 * Reduce cold deferred-name validation work with a bounded mask prefilter and exact collision checks. Keep ambiguous batches and byte-distinct Unicode names on the same canonical materialization contract.
 * Make deferred attribute lookups and serialization agree with materialized storage. Preserve the existing first-position/last-value rule for exact duplicate names, first matching case-variant lookup, trimmed valid keys, and byte-name precedence. Ordinary unique attribute batches remain deferred; ambiguous batches materialize before reads rather than changing their answers later.
 * Use wrapping integer arithmetic in `Attribute.hashCode()` so hash mixing cannot trap on overflow.
