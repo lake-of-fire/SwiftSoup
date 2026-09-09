@@ -411,7 +411,7 @@ open class Node: Equatable, Hashable {
         if (!hasAttr(keyStr)) {
             return Node.empty // nothing to make absolute with
         } else {
-            return StringUtil.resolve(String(decoding: baseUri!, as: UTF8.self), relUrl: try attr(keyStr)).utf8Array
+            return StringUtil.resolve(String(decoding: getBaseUriUTF8(), as: UTF8.self), relUrl: try attr(keyStr)).utf8Array
         }
     }
     
@@ -810,6 +810,7 @@ open class Node: Equatable, Hashable {
     
     @inline(__always)
     public func setParentNode(_ parentNode: Node) throws {
+        try parentNode.validateChildInsertion(self)
         if (self.parentNode != nil) {
             try self.parentNode?.removeChild(self)
         }
@@ -820,6 +821,8 @@ open class Node: Equatable, Hashable {
     public func replaceChild(_ out: Node, _ input: Node) throws {
         try Validate.isTrue(val: out.parentNode === self)
         try Validate.notNull(obj: input)
+        guard out !== input else { return }
+        try validateChildInsertion(input)
         if (input.parentNode != nil) {
             try input.parentNode?.removeChild(input)
         }
@@ -860,7 +863,8 @@ open class Node: Equatable, Hashable {
     
     @inline(__always)
     public func addChildren(_ children: [Node]) throws {
-        //most used. short circuit addChildren(int), which hits reindex children and array copy
+        // Validate the whole batch before detaching any input from its current tree.
+        for child in children { try validateChildInsertion(child) }
         for child in children {
             try reparentChild(child)
             childNodes.append(child)
@@ -878,24 +882,41 @@ open class Node: Equatable, Hashable {
     
     @inline(__always)
     public func addChildren(_ index: Int, _ children: [Node]) throws {
+        try Validate.isTrue(val: index >= 0 && index <= childNodes.count, msg: "Insert position out of bounds.")
+        for input in children { try validateChildInsertion(input) }
+        var insertionIndex = index
         for input in children.reversed() {
+            // The insertion gap belongs to the original list. Removing an earlier
+            // sibling shifts that gap left before inserting at it.
+            if input.parentNode === self && input.siblingIndex < insertionIndex {
+                insertionIndex -= 1
+            }
             try reparentChild(input)
-            childNodes.insert(input, at: index)
-            reindexChildren(index)
+            childNodes.insert(input, at: insertionIndex)
+            reindexChildren(insertionIndex)
             input.markSourceDirty()
         }
         markSourceDirty()
         bumpTextMutationVersion()
     }
-    
+
     @inline(__always)
-    public func reparentChild(_ child: Node)throws {
-        try child.parentNode?.removeChild(child)
+    public func reparentChild(_ child: Node) throws {
+        // setParentNode validates before removing the old parent link.
         try child.setParentNode(self)
         // propagate builder reference for bulk-append checks
         child.treeBuilder = self.treeBuilder
     }
-    
+
+    @inline(__always)
+    @usableFromInline
+    internal func validateChildInsertion(_ child: Node) throws {
+        // A leaf cannot be an ancestor. Keep the common detached-leaf path cheap.
+        try Validate.isTrue(val: child !== self &&
+            (!child.hasChildNodes() || !child.isAncestor(of: self)),
+            msg: "A node cannot contain itself or one of its ancestors.")
+    }
+
     @usableFromInline
     internal func reindexChildren(_ start: Int) {
         for (index, node) in childNodes[start...].enumerated() {
