@@ -221,39 +221,51 @@ open class TextNode: Node {
     }
 
     /**
-     Split this text node into two nodes at the specified string offset. After splitting, this node will contain the
-     original text up to the offset, and will have a new text node sibling containing the text after the offset.
-     - parameter offset: string offset point to split node at.
-     - returns: the newly created text node containing the text after the offset.
+     Split this text node at a Swift Character (extended grapheme cluster) offset.
+     The offset may equal the character count, producing an empty tail. When this
+     node is attached, the tail is inserted immediately after it.
+     - parameter offset: number of Characters to retain in this node.
+     - returns: the new text node containing the remainder.
      */
     open func splitText(_ offset: Int) throws -> TextNode {
-        try Validate.isTrue(val: offset >= 0, msg: "Split offset must be not be negative")
-        let current = getWholeTextUTF8()
-        try Validate.isTrue(val: offset < current.count, msg: "Split offset must not be greater than current text length")
-
-        let head: String = getWholeText().substring(0, offset)
-        let tail: String = getWholeText().substring(offset)
-        text(head)
-        let tailNode: TextNode = TextNode(tail.utf8Array, self.getBaseUriUTF8())
-        if (parent() != nil) {
-            try parent()?.addChildren(siblingIndex+1, tailNode)
+        try Validate.isTrue(val: offset >= 0, msg: "Split offset must not be negative")
+        let whole = getWholeText()
+        guard let split = whole.index(whole.startIndex, offsetBy: offset, limitedBy: whole.endIndex) else {
+            throw Exception.Error(type: ExceptionType.IllegalArgumentException,
+                                  Message: "Split offset must not exceed the character count")
         }
-        return tailNode
+        return try splitText(head: String(whole[..<split]), tail: String(whole[split...]))
     }
-    
+
+    /**
+     Split at an exact UTF-8 byte offset. The offset must lie on a Unicode scalar
+     boundary, but may lie inside a multi-scalar Character. End offsets are valid.
+     Invalid UTF-8, interior code-unit offsets, and out-of-range offsets throw
+     before changing the text or its parent tree.
+     */
     open func splitText(utf8Offset: Int) throws -> TextNode {
-        // Ensure UTF-8 offset is within valid bounds
         try Validate.isTrue(val: utf8Offset >= 0, msg: "Split UTF-8 offset must not be negative")
         let current = getWholeTextUTF8()
-        try Validate.isTrue(val: utf8Offset < current.count, msg: "Split UTF-8 offset must not exceed current text length in UTF-8 bytes")
-        
-        // Convert UTF-8 offset to extended grapheme cluster offset
-        let graphemeOffset = Substring(getWholeText().utf8.prefix(utf8Offset)).count
-        
-        // Validate grapheme cluster offset
-        try Validate.isTrue(val: graphemeOffset < current.count, msg: "Split grapheme cluster offset must not exceed current text length")
-        
-        return try splitText(graphemeOffset)
+        try Validate.isTrue(val: utf8Offset <= current.count, msg: "Split UTF-8 offset must not exceed the byte count")
+        guard let whole = String(bytes: current, encoding: .utf8) else {
+            throw Exception.Error(type: ExceptionType.IllegalArgumentException,
+                                  Message: "Cannot split invalid UTF-8 text")
+        }
+        let bytes = whole.utf8
+        let split = bytes.index(bytes.startIndex, offsetBy: utf8Offset)
+        try Validate.isTrue(val: split.samePosition(in: whole.unicodeScalars) != nil,
+                            msg: "Split UTF-8 offset must be on a Unicode scalar boundary")
+        return try splitText(head: String(decoding: bytes[..<split], as: UTF8.self),
+                             tail: String(decoding: bytes[split...], as: UTF8.self))
+    }
+
+    private func splitText(head: String, tail: String) throws -> TextNode {
+        let tailNode = TextNode(Array(tail.utf8), getBaseUriUTF8())
+        text(head)
+        if let parent = parent() {
+            try parent.addChildren(siblingIndex + 1, tailNode)
+        }
+        return tailNode
     }
 
     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {

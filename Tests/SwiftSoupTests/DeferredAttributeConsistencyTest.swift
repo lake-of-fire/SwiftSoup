@@ -2,172 +2,282 @@ import XCTest
 @testable import SwiftSoup
 
 final class DeferredAttributeConsistencyTest: XCTestCase {
-    private func pending(_ pairs: [(String, String?)]) throws -> Attributes {
-        let token = Token.StartTag()
-        for (key, value) in pairs {
-            token.appendAttributeName(Array(key.utf8))
-            if let value {
-                if value.isEmpty { token.setEmptyAttributeValue() }
-                else { token.appendAttributeValue(ByteSlice.fromArray(Array(value.utf8))) }
-            }
-            try token.newAttribute()
-        }
-        return token.getAttributes()
+    private func item(_ key: String, _ value: String, bytes: Bool = false) -> Attributes.PendingAttribute {
+        let keyBytes = Array(key.utf8)
+        return Attributes.PendingAttribute(
+            nameSlice: bytes ? nil : ByteSlice.fromArray(keyBytes),
+            nameBytes: bytes ? keyBytes : nil,
+            hasUppercase: Attributes.containsAsciiUppercase(keyBytes),
+            value: .slice(ByteSlice.fromArray(Array(value.utf8))))
     }
 
-    func testTextNodeBytePresenceBeforeAnyOtherAttributeAccess() throws {
-        let text = TextNode("before", "")
-        XCTAssertNil(text.attributes)
-        XCTAssertTrue(text.hasAttr(Array("text".utf8)))
-        XCTAssertTrue(text.hasAttr(Array("TeXt".utf8)))
-        XCTAssertFalse(text.hasAttr(Array("missing".utf8)))
-        XCTAssertEqual(text.getWholeText(), "before")
-        XCTAssertTrue(text.hasAttr("text"))
+    private func deferred(_ pairs: [(String, String)], bytes: Bool = false) -> Attributes {
+        Attributes(pendingAttributes: pairs.map { item($0.0, $0.1, bytes: bytes) })
     }
 
-    func testDuplicateValueIsStableAcrossMaterialization() throws {
-        for padding in [0, 1, 8] {
-            let pairs: [(String, String?)] = [("duplicate", "before"), ("duplicate", "after")]
-                + (0..<padding).map { ("k\($0)", "v\($0)") }
-            let attributes = try pending(pairs)
-            XCTAssertEqual(attributes.get(key: "duplicate"), "after")
-            XCTAssertEqual(try attributes.getIgnoreCase(key: "DUPLICATE"), "after")
-            XCTAssertEqual(String(decoding: try attributes.getIgnoreCaseSlice(key: Array("duplicate".utf8)), as: UTF8.self), "after")
-            XCTAssertEqual(attributes.size(), padding + 1)
-            XCTAssertEqual(attributes.get(key: "duplicate"), "after")
+    func testDuplicateExactLookupDoesNotChangeAfterMaterialization() throws {
+        for bytes in [false, true] {
+            let attrs = deferred([("id", "first"), ("title", "x"), ("id", "last")], bytes: bytes)
+            XCTAssertTrue(attrs.attributes.isEmpty)
+            XCTAssertEqual(attrs.get(key: "id"), "last")
+            XCTAssertEqual(try attrs.getIgnoreCase(key: "ID"), "last")
+            XCTAssertEqual(attrs.valueSliceCaseSensitive(Array("id".utf8))?.toArray(), Array("last".utf8))
+            XCTAssertEqual(try attrs.getIgnoreCaseSlice(key: Array("ID".utf8)).toArray(), Array("last".utf8))
+            XCTAssertEqual(attrs.size(), 2)
+            XCTAssertEqual(attrs.get(key: "id"), "last")
         }
     }
 
-    func testCaseVariantsRetainFirstKeyPositionAndLastExactValue() throws {
-        for pairs in [
-            [("A", "first"), ("a", "lower"), ("A", "last")],
-            [("A", "first"), ("A", "last"), ("a", "lower")]
-        ] {
-            let attributes = try pending(pairs.map { ($0.0, Optional($0.1)) })
-            XCTAssertEqual(attributes.get(key: "A"), "last")
-            XCTAssertEqual(attributes.get(key: "a"), "lower")
-            XCTAssertEqual(try attributes.getIgnoreCase(key: "a"), "last")
-            XCTAssertEqual(attributes.size(), 2)
-            XCTAssertEqual(try attributes.getIgnoreCase(key: "a"), "last")
-            XCTAssertEqual(attributes.asList().map { $0.getKey() }, ["A", "a"])
-        }
-    }
-
-    func testTrimmedAndMalformedKeysHaveStablePresence() throws {
-        let attributes = try pending([(" title ", "trimmed"), (" \t", "invalid")])
-        XCTAssertEqual(attributes.get(key: "title"), "trimmed")
-        XCTAssertTrue(attributes.hasKey(key: "title"))
-        XCTAssertFalse(attributes.hasKey(key: " title "))
-        XCTAssertFalse(attributes.hasKey(key: " \t"))
-        XCTAssertEqual(try attributes.getIgnoreCase(key: "TITLE"), "trimmed")
-        XCTAssertEqual(attributes.size(), 1)
-        XCTAssertEqual(attributes.get(key: "title"), "trimmed")
-    }
-
-    func testDeferredHTMLMatchesMaterializedAttributeHTML() throws {
-        let attributes = try pending([("checked", nil), ("duplicate", "before"), ("duplicate", "after"), (" title ", "x"), (" \t", "invalid")])
-        let before = try attributes.html()
-        _ = attributes.size()
-        XCTAssertEqual(before, try attributes.html())
-    }
-
-    func testMalformedPresenceChecksStartFromFreshDeferredStorage() throws {
-        for key in [" title ", " \t", ""] {
-            let attributes = try pending([(" title ", "trimmed"), (" \t", "invalid")])
-            XCTAssertFalse(attributes.hasKey(key: key), key)
-            XCTAssertFalse(attributes.hasKeyIgnoreCase(key: Array(key.utf8)), key)
-        }
-    }
-
-    func testDuplicateIdsAndClassesAgreeWithWarmedSelectors() throws {
-        let html = "<p id='old' id='new' class='before' class='after' data-v='one' data-v='two'></p>"
-        for firstRead in 0..<4 {
-            let doc = try SwiftSoup.parse(html)
-            let p = try XCTUnwrap(doc.body()?.child(0))
-            let attrs = try XCTUnwrap(p.getAttributes())
-            if firstRead == 0 { XCTAssertEqual(try p.attr("id"), "new") }
-            if firstRead == 1 { XCTAssertTrue(try doc.select("#new").first() === p) }
-            if firstRead == 2 { XCTAssertTrue(try doc.select(".after").first() === p) }
-            if firstRead == 3 { _ = attrs.clone() }
-            for _ in 0..<3 {
-                XCTAssertEqual(try p.attr("id"), "new")
-                XCTAssertTrue(try doc.select("#new.after[data-v=two]").first() === p)
-                XCTAssertEqual(try doc.select("#old, .before, [data-v=one]").size(), 0)
-                _ = attrs.asList()
+    func testIgnoreCaseKeepsFirstVariantButItsLastExactValue() throws {
+        for bytes in [false, true] {
+            for count in [0, 2, 20] {
+                let padding = (0..<count).map { ("k\($0)", "v\($0)") }
+                let attrs = deferred(padding + [("ID", "old-upper"), ("id", "lower"), ("ID", "new-upper")], bytes: bytes)
+                XCTAssertEqual(try attrs.getIgnoreCase(key: "Id"), "new-upper")
+                XCTAssertEqual(try attrs.getIgnoreCaseSlice(key: Array("iD".utf8)).toArray(), Array("new-upper".utf8))
+                XCTAssertEqual(attrs.get(key: "id"), "lower")
+                _ = attrs.size()
+                XCTAssertEqual(try attrs.getIgnoreCase(key: "Id"), "new-upper")
+                XCTAssertEqual(attrs.get(key: "id"), "lower")
             }
         }
     }
 
-    func testAppendingAfterADeferredReadInvalidatesCanonicalView() throws {
-        let attrs = try pending([("data-v", "first")])
-        XCTAssertEqual(attrs.get(key: "data-v"), "first")
-        attrs.appendPending(Attributes.PendingAttribute(nameSlice: ByteSlice.fromArray(Array("data-v".utf8)), nameBytes: nil, hasUppercase: false, value: .bytes(Array("last".utf8))))
-        XCTAssertEqual(attrs.get(key: "data-v"), "last")
-        XCTAssertEqual(attrs.size(), 1)
-        XCTAssertEqual(attrs.get(key: "data-v"), "last")
+    func testPaddedNamesAreNormalizedBeforeDeferredLookups() throws {
+        for bytes in [false, true] {
+            for query in ["id", " id ", "ID", " ID "] {
+                let attrs = deferred([(" id ", "value")], bytes: bytes)
+                let expected = query == "id" ? "value" : ""
+                XCTAssertEqual(attrs.get(key: query), expected, query)
+                let insensitive = query == "id" || query == "ID" ? "value" : ""
+                XCTAssertEqual(try attrs.getIgnoreCase(key: query), insensitive, query)
+                _ = attrs.size()
+                XCTAssertEqual(attrs.get(key: query), expected, query)
+            }
+        }
     }
 
-    func testCanonicalDeferredReadsDoNotMaterializeAttributesOrDirtyOwners() throws {
+    func testPaddedSliceLookupDoesNotDependOnWhichGetterRanFirst() throws {
+        for bytes in [false, true] {
+            let attrs = deferred([(" id ", "value")], bytes: bytes)
+            XCTAssertEqual(attrs.valueSliceCaseSensitive(Array("id".utf8))?.toArray(), Array("value".utf8))
+            XCTAssertNil(attrs.valueSliceCaseSensitive(Array(" id ".utf8)))
+        }
+    }
+
+    func testInvalidPendingNamesAreNeverPresent() throws {
+        for bytes in [false, true] {
+            for key in [" ", "\t", " \n\t "] {
+                let attrs = deferred([(key, "discard")], bytes: bytes)
+                XCTAssertFalse(attrs.hasKey(key: key))
+                XCTAssertFalse(attrs.hasKeyIgnoreCase(key: Array(key.utf8)[...]))
+                XCTAssertEqual(attrs.get(key: key), "")
+                XCTAssertEqual(attrs.size(), 0)
+            }
+        }
+    }
+
+    func testDeferredSerializationMatchesMaterializedSerialization() throws {
+        for bytes in [false, true] {
+            for syntax in [OutputSettings.Syntax.html, .xml] {
+                let attrs = deferred([("id", "old"), ("title", "日本<&\""), ("id", "new"), (" \t ", "drop"), (" data-x ", "x")], bytes: bytes)
+                let settings = OutputSettings().syntax(syntax: syntax)
+                let before = StringBuilder()
+                try attrs.html(accum: before, out: settings)
+                _ = attrs.size()
+                let after = StringBuilder()
+                try attrs.html(accum: after, out: settings)
+                XCTAssertEqual(before.toString(), after.toString())
+                XCTAssertEqual(attrs.asList().map { $0.getKey() }, ["id", "title", "data-x"])
+                XCTAssertFalse(before.toString().contains("old"))
+                XCTAssertFalse(before.toString().contains("drop"))
+            }
+        }
+    }
+
+    func testNameBytesTakePrecedenceOverNameSliceOnEveryPath() throws {
+        var pending = item("slice-key", "v")
+        pending.nameBytes = Array("byte-key".utf8)
+        let attrs = Attributes(pendingAttributes: [pending])
+        XCTAssertEqual(try attrs.html(), " byte-key=\"v\"")
+        XCTAssertEqual(attrs.get(key: "byte-key"), "v")
+        XCTAssertEqual(attrs.get(key: "slice-key"), "")
+        XCTAssertEqual(attrs.asList().map { $0.getKey() }, ["byte-key"])
+    }
+
+    func testMalformedMissingNameDoesNotLeaveSerializationWhitespace() throws {
+        var pending = item("unused", "v")
+        pending.nameSlice = nil
+        let attrs = Attributes(pendingAttributes: [pending])
+        XCTAssertEqual(try attrs.html(), "")
+        XCTAssertEqual(attrs.size(), 0)
+    }
+
+    func testDuplicateBooleanAndExplicitEmptyValuesAgreeBeforeAndAfter() throws {
+        for lastIsBoolean in [false, true] {
+            var first = item("custom", "old")
+            var last = item("custom", "")
+            if lastIsBoolean { last.value = .none } else { first.value = .none }
+            let attrs = Attributes(pendingAttributes: [first, item("id", "kept"), last])
+            let before = try attrs.html()
+            XCTAssertEqual(attrs.get(key: "custom"), "")
+            _ = attrs.size()
+            XCTAssertEqual(try attrs.html(), before)
+            XCTAssertEqual(attrs.asList().first is BooleanAttribute, lastIsBoolean)
+        }
+    }
+
+    func testFragmentedDuplicateValueKeepsSelectedExactVariant() throws {
+        var fragments = item("ID", "unused")
+        fragments.value = .slices([ByteSlice.fromArray(Array("日本".utf8)), ByteSlice.fromArray(Array("語".utf8))], 9)
+        let attrs = Attributes(pendingAttributes: [item("ID", "old"), item("id", "lower"), fragments])
+        XCTAssertEqual(try attrs.getIgnoreCase(key: "id"), "日本語")
+        XCTAssertEqual(try attrs.getIgnoreCaseSlice(key: Array("id".utf8)).toArray(), Array("日本語".utf8))
+        XCTAssertEqual(attrs.get(key: "id"), "lower")
+        _ = attrs.size()
+        XCTAssertEqual(try attrs.getIgnoreCase(key: "id"), "日本語")
+    }
+
+    func testPublicParsedDuplicateAttributeLookupIsReadOrderIndependent() throws {
         let doc = try SwiftSoup.parse("<p id='old' id='new' class='before' class='after'></p>")
-        let p = try XCTUnwrap(doc.body()?.child(0))
+        let p = try XCTUnwrap(doc.body()?.getChildNodes().first as? Element)
         let attrs = try XCTUnwrap(p.getAttributes())
-        XCTAssertTrue(attrs.attributes.isEmpty)
-        let dirty = p.sourceRangeDirty
-        let version = doc.textMutationVersion
         XCTAssertEqual(try p.attr("id"), "new")
-        _ = try attrs.html()
-        XCTAssertTrue(attrs.attributes.isEmpty, "deferred reads should retain byte-backed storage")
-        XCTAssertEqual(p.sourceRangeDirty, dirty)
-        XCTAssertEqual(doc.textMutationVersion, version)
+        XCTAssertEqual(p.id(), "new")
+        XCTAssertEqual(try p.className(), "after")
+        _ = attrs.size()
+        XCTAssertEqual(try p.attr("id"), "new")
+        for _ in 0..<4 {
+            XCTAssertEqual(try doc.select("#old, .before").size(), 0)
+            XCTAssertTrue(try doc.select("#new.after").first() === p)
+        }
     }
 
-    func testBooleanExplicitValuesSerializeConsistently() throws {
-        for key in ["disabled", "DISABLED", "custom"] {
-            for value in [nil, "", key, key.lowercased(), "different"] as [String?] {
-                for syntax in [OutputSettings.Syntax.html, .xml] {
-                    let attrs = try pending([(key, value)])
-                    let out = OutputSettings().syntax(syntax: syntax)
-                    let before = StringBuilder()
-                    try attrs.html(accum: before, out: out)
-                    _ = attrs.size()
-                    let after = StringBuilder()
-                    try attrs.html(accum: after, out: out)
-                    XCTAssertEqual(before.toString(), after.toString(), "\(key)=\(String(describing: value)), \(syntax)")
+    func testDeferredLookupAndSerializationDoNotDirtyOwners() throws {
+        let attrs = deferred([("id", "old"), ("id", "new"), (" \t ", "drop")])
+        let element = Element(try Tag.valueOf("p"), "", attrs)
+        let version = element.textMutationVersionToken()
+        let dirty = element.sourceRangeDirty
+        XCTAssertEqual(try element.attr("id"), "new")
+        let before = try attrs.html()
+        _ = attrs.size()
+        XCTAssertEqual(try attrs.html(), before)
+        XCTAssertEqual(element.textMutationVersionToken(), version)
+        XCTAssertEqual(element.sourceRangeDirty, dirty)
+    }
+
+    func testGeneratedDeferredStatesMatchImmediateInsertionModel() throws {
+        let names = ["id", "ID", "class", "CLASS", "data-x", " data-x ", "x", " x\t", "\t", " ", "é", "e\u{301}"]
+        let queries = ["id", "ID", "class", "CLASS", "data-x", " data-x ", "x", " x\t", "missing", "é", "e\u{301}"]
+        var state: UInt64 = 0x7a91_264e_310b_882f
+        func next(_ upper: Int) -> Int {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Int((state >> 32) % UInt64(upper))
+        }
+        for fixture in 0..<256 {
+            var pending: [Attributes.PendingAttribute] = []
+            let model = Attributes()
+            let length = fixture % 4 == 0 ? 1 : 4 + next(40)
+            for index in 0..<length {
+                let name = names[next(names.count)]
+                let text = ["", "value\(index)", "日本<&\"", "é", "e\u{301}"][next(5)]
+                var attr = item(name, text, bytes: next(2) == 0)
+                let rawName = Array(name.utf8)
+                let rawValue = Array(text.utf8)
+                let kind = next(5)
+                if kind == 0 {
+                    attr.value = .none
+                    if let value = try? BooleanAttribute(key: rawName) { model.put(attribute: value) }
+                } else {
+                    switch kind {
+                    case 1: attr.value = .bytes(rawValue)
+                    case 2:
+                        let middle = rawValue.count / 2
+                        attr.value = .slices([ByteSlice.fromArray(Array(rawValue[..<middle])), ByteSlice.fromArray(Array(rawValue[middle...]))], rawValue.count)
+                    default: break
+                    }
+                    if let value = try? Attribute(key: rawName, value: rawValue) { model.put(attribute: value) }
+                }
+                pending.append(attr)
+            }
+            // Each API starts from fresh deferred storage: a missing-key lookup
+            // through a different API must not materialize later test cases.
+            func fresh() -> Attributes { Attributes(pendingAttributes: pending) }
+            for query in queries {
+                let raw = Array(query.utf8)
+                XCTAssertEqual(fresh().get(key: query), model.get(key: query), "fixture \(fixture) \(query)")
+                XCTAssertEqual(try fresh().getIgnoreCase(key: query), try model.getIgnoreCase(key: query), "fixture \(fixture) \(query)")
+                XCTAssertEqual(fresh().hasKey(key: query), model.hasKey(key: query))
+                XCTAssertEqual(fresh().hasKeyIgnoreCase(key: raw[...]), model.hasKeyIgnoreCase(key: raw[...]))
+                XCTAssertEqual(fresh().valueSliceCaseSensitive(raw)?.toArray(), model.valueSliceCaseSensitive(raw)?.toArray())
+                XCTAssertEqual(try fresh().getIgnoreCaseSlice(key: raw), try model.getIgnoreCaseSlice(key: raw))
+            }
+            for syntax in [OutputSettings.Syntax.html, .xml] {
+                let settings = OutputSettings().syntax(syntax: syntax)
+                let actual = StringBuilder()
+                let expected = StringBuilder()
+                try fresh().html(accum: actual, out: settings)
+                try model.html(accum: expected, out: settings)
+                XCTAssertEqual(actual.buffer, expected.buffer, "fixture \(fixture)")
+            }
+            XCTAssertEqual(fresh().asList().map { $0.getKeyUTF8() }, model.asList().map { $0.getKeyUTF8() })
+            XCTAssertEqual(fresh().asList().map { $0.getValueUTF8() }, model.asList().map { $0.getValueUTF8() })
+        }
+    }
+
+    func testUnambiguousDeferredReadsAndSerializationStayDeferred() throws {
+        let attrs = deferred([("id", "new"), ("title", "text")])
+        XCTAssertEqual(attrs.get(key: "id"), "new")
+        XCTAssertEqual(try attrs.getIgnoreCase(key: "ID"), "new")
+        XCTAssertTrue(attrs.hasKey(key: "title"))
+        XCTAssertEqual(try attrs.html(), " id=\"new\" title=\"text\"")
+        XCTAssertTrue(attrs.attributes.isEmpty, "successful reads must not allocate mutable attributes")
+    }
+
+    func testAppendingAfterDeferredReadsCannotReuseStaleValues() throws {
+        let attrs = deferred([("ID", "old"), ("id", "lower")])
+        XCTAssertEqual(try attrs.getIgnoreCase(key: "id"), "old")
+        _ = try attrs.html()
+        attrs.appendPending(item("ID", "new"))
+        XCTAssertEqual(try attrs.getIgnoreCase(key: "id"), "new")
+        XCTAssertEqual(attrs.get(key: "id"), "lower")
+        XCTAssertEqual(try attrs.html(), " ID=\"new\" id=\"lower\"")
+        _ = attrs.size()
+        XCTAssertEqual(try attrs.getIgnoreCase(key: "id"), "new")
+    }
+
+    func testReplacingValidatedPendingBatchRevalidatesNames() throws {
+        let attrs = deferred([("id", "old")])
+        XCTAssertEqual(attrs.get(key: "id"), "old")
+        XCTAssertTrue(attrs.attributes.isEmpty)
+        attrs.pendingAttributes = [item("id", "first"), item("id", "last")]
+        attrs.pendingAttributesCount = 2
+        XCTAssertEqual(attrs.get(key: "id"), "last")
+        XCTAssertEqual(try attrs.html(), " id=\"last\"")
+    }
+
+    func testSmallAndWideValidationAgreeOnAllTrimWhitespace() throws {
+        for count in [0, 7, 8, 32] {
+            for byte in [9, 10, 11, 12, 13, 32] {
+                let space = String(UnicodeScalar(byte)!)
+                for bytes in [false, true] {
+                    let pairs = (0..<count).map { ("k\($0)", "v") } + [(space + "id" + space, "value"), (space, "drop")]
+                    let attrs = deferred(pairs, bytes: bytes)
+                    XCTAssertEqual(attrs.get(key: "id"), "value")
+                    XCTAssertFalse(attrs.hasKey(key: space))
+                    XCTAssertFalse(try attrs.html().contains("drop"))
+                    XCTAssertEqual(attrs.size(), count + 1)
                 }
             }
         }
     }
 
-    func testReadsPreserveSourceReuseAndStableRegeneratedSerialization() throws {
-        let html = "<p id='old' id='new' class='before' class='after'>日本語</p>"
-        let doc = try SwiftSoup.parse(html)
-        let p = try XCTUnwrap(doc.body()?.child(0))
-        let settings = doc.outputSettings().prettyPrint(pretty: false)
-        let original = try p.outerHtmlUTF8Internal(settings, allowRawSource: true)
-        let regenerated = try p.outerHtmlUTF8Internal(settings, allowRawSource: false)
-        XCTAssertTrue(p.getAttributes()?.attributes.isEmpty == true)
-        XCTAssertEqual(try p.attr("id"), "new")
-        _ = p.getAttributes()?.asList()
-        XCTAssertEqual(try p.outerHtmlUTF8Internal(settings, allowRawSource: true), original)
-        XCTAssertEqual(try p.outerHtmlUTF8Internal(settings, allowRawSource: false), regenerated)
-        try p.attr("id", "edited")
-        let edited = try SwiftSoup.parse(String(decoding: p.outerHtmlUTF8Internal(settings, allowRawSource: true), as: UTF8.self))
-        XCTAssertEqual(try edited.select("#edited.after").size(), 1)
-        XCTAssertEqual(try edited.select("#old, #new, .before").size(), 0)
-    }
-
-    func testTextBytePresenceOnParsedNodesDoesNotDirtySourceOrRestoreRemovedText() throws {
-        let doc = try SwiftSoup.parse("<p>日本語</p>")
-        let p = try XCTUnwrap(doc.body()?.child(0))
-        let text = try XCTUnwrap(p.getChildNodes().first as? TextNode)
-        let dirty = text.sourceRangeDirty
-        let version = doc.textMutationVersion
-        XCTAssertNil(text.attributes)
-        XCTAssertTrue(text.hasAttr(Array("TEXT".utf8)))
-        XCTAssertEqual(text.sourceRangeDirty, dirty)
-        XCTAssertEqual(doc.textMutationVersion, version)
-        try text.removeAttr(Array("text".utf8))
-        XCTAssertFalse(text.hasAttr(Array("text".utf8)))
-        XCTAssertEqual(text.getWholeText(), "")
+    func testWideDeferredDuplicateLookupUsesLastValueImmediately() throws {
+        let pairs = (0..<4096).map { ("key-\($0)", "v\($0)") }
+        let attrs = deferred(pairs + [("key-0", "last")])
+        XCTAssertEqual(attrs.get(key: "key-0"), "last")
+        XCTAssertEqual(attrs.size(), 4096)
+        XCTAssertEqual(attrs.asList().first?.getKey(), "key-0")
+        XCTAssertEqual(attrs.get(key: "key-4095"), "v4095")
     }
 }

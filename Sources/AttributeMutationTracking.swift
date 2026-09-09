@@ -3,6 +3,10 @@
 // This avoids adding callbacks or an owner allocation to deferred parser attributes.
 internal extension Attribute {
     func observeMutations(in owner: Attributes) {
+        // Callers have just obtained this attribute from, or inserted it into,
+        // owner. Re-reading a singly owned list must not rescan the whole list
+        // once per attribute. Mutation notifications still validate membership.
+        if let owners = mutationOwners, owners.count == 1, owners[0].value === owner { return }
         mutationOwners?.removeAll { reference in
             guard let existing = reference.value else { return true }
             // The caller is registering an attribute already in this owner. Avoid

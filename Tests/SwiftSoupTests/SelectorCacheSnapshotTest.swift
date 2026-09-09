@@ -14,13 +14,16 @@ final class SelectorCacheSnapshotTest: XCTestCase {
             root = try XCTUnwrap(moved.select("section").first())
             let paragraph = try XCTUnwrap(root.select("p").first())
             text = try XCTUnwrap(paragraph.childNode(0) as? TextNode)
-            // Match the destination's version after the later text edit.
+            // Give the source a nonzero version before warming its cache.
             text.text("before")
             for _ in 0..<4 { XCTAssertEqual(try root.select("p:contains(before)").size(), 1) }
             XCTAssertNotNil(root.cachedSelectorResult("p:contains(before)"))
             try XCTUnwrap(destination.body()).appendChild(moved)
         }
         XCTAssertNil(releasedDocument)
+        // Force an equal version across different roots, independently of how
+        // many correct invalidations append/adoption performs.
+        destination.textMutationVersion = root.selectorResultTextVersion &- 1
         text.text("after")
         XCTAssertEqual(root.selectorResultTextVersion, destination.textMutationVersion)
         XCTAssertEqual(try root.select("p:contains(before)").size(), 0)
@@ -37,6 +40,9 @@ final class SelectorCacheSnapshotTest: XCTestCase {
         for _ in 0..<4 { XCTAssertEqual(try root.select("p:contains(before)").size(), 1) }
         XCTAssertNotNil(root.cachedSelectorResult("p:contains(before)"))
         try destination.appendChild(moved)
+        // Force an equal version across different roots, independently of how
+        // many correct invalidations append/adoption performs.
+        destination.textMutationVersion = root.selectorResultTextVersion &- 1
         text.text("after")
         XCTAssertEqual(root.selectorResultTextVersion, destination.textMutationVersion)
         XCTAssertEqual(try root.select("p:contains(before)").size(), 0)

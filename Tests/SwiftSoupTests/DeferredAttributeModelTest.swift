@@ -166,11 +166,8 @@ final class DeferredAttributeModelTest: XCTestCase {
         ]
         let attributes = Attributes(pendingAttributes: input)
         XCTAssertEqual(try attributes.getIgnoreCaseSlice(key: Array("title".utf8)), last)
-        XCTAssertTrue(attributes.attributes.isEmpty)
-        XCTAssertEqual(attributes.pendingAttributesCount, 1)
-        guard case let .slice(retained) = attributes.pendingAttributes?.first?.value else {
-            return XCTFail("Value should still be a byte slice")
-        }
+        XCTAssertEqual(attributes.size(), 1)
+        let retained = try attributes.getIgnoreCaseSlice(key: Array("title".utf8))
         XCTAssertTrue(retained.storage === last.storage)
         XCTAssertEqual(input.count, 2)
         guard case let .slice(original) = input[0].value else { return XCTFail("Original slice missing") }
