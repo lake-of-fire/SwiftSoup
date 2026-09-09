@@ -159,6 +159,13 @@ struct ByteSlice: RandomAccessCollection, Hashable, Sendable {
     func withUnsafeBufferPointer<R>(_ body: (UnsafeBufferPointer<UInt8>) throws -> R) rethrows -> R {
         return try withUnsafeBytes(body)
     }
+
+    /// All backing stores expose contiguous bytes for the duration of the closure.
+    @usableFromInline
+    @inline(__always)
+    func withContiguousStorageIfAvailable<R>(_ body: (UnsafeBufferPointer<UInt8>) throws -> R) rethrows -> R? {
+        return try withUnsafeBytes(body)
+    }
 }
 
 extension ByteSlice {

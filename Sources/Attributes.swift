@@ -157,6 +157,11 @@ open class Attributes: NSCopying {
         attributes.reserveCapacity(16)
     }
 
+    private init(copying attributes: [Attribute], hasUppercaseKeys: Bool) {
+        self.attributes = attributes
+        self.hasUppercaseKeys = hasUppercaseKeys
+    }
+
     /// Adopts a token's deferred attributes before an element owns this collection.
     internal init(pendingAttributes: [PendingAttribute]) {
         self.pendingAttributes = pendingAttributes
@@ -1318,15 +1323,8 @@ open class Attributes: NSCopying {
     @inline(__always)
     public func copy(with zone: NSZone? = nil) -> Any {
         ensureMaterialized()
-        let clone = Attributes()
-        clone.attributes = attributes.map { $0.clone() }
-        clone.hasUppercaseKeys = clone.attributes.contains { Self.containsAsciiUppercase($0.keySlice) }
-        clone.lowercasedKeysCache = nil
-        clone.lowercasedKeyIndex = nil
-        clone.lowercasedKeyIndexDirty = true
-        clone.keyIndex = nil
-        clone.keyIndexDirty = true
-        return clone
+        let copied = attributes.map { $0.clone() }
+        return Attributes(copying: copied, hasUppercaseKeys: copied.contains { Self.containsAsciiUppercase($0.keySlice) })
     }
     
     @inline(__always)

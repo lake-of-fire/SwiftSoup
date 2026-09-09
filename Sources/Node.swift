@@ -920,7 +920,7 @@ open class Node: Equatable, Hashable {
     @usableFromInline
     internal func reindexChildren(_ start: Int) {
         for (index, node) in childNodes[start...].enumerated() {
-            node.setSiblingIndex(start + index)
+            node.siblingIndex = start + index
         }
     }
     
