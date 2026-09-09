@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Fix regex capture extraction to use Foundation UTF-16 ranges, preventing Unicode-offset crashes and preserving captures within combining, emoji, and CRLF graphemes. `Matcher.group` now returns nil for invalid group indices or without a current match; participating empty captures remain empty strings. Exhausted matchers stop advancing their cursor. Pattern compilation reuse and legacy option handling are unchanged.
 * Define `TextNode.splitText(_:)` offsets as Swift Characters and `splitText(utf8Offset:)` offsets as exact Unicode scalar-aligned UTF-8 byte positions. End offsets produce empty tails. Invalid ranges, partial UTF-8 scalars, and malformed byte storage throw before mutation; byte splits no longer silently round to a grapheme boundary.
 * Keep text-dependent selector caches current after child appends, detach retained children during `empty()` / content replacement, and preserve original insertion gaps when moving existing siblings. Self replacement is a no-op; invalid offsets and cyclic insertions/replacements are rejected before detaching any inputs.
 * Resolve node URLs through the public base-URI byte getter, including absent base URIs, instead of force-unwrapping storage.
