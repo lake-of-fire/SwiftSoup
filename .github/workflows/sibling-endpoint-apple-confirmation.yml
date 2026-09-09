@@ -1,0 +1,64 @@
+name: Independently confirm published sibling endpoint performance on Apple
+on:
+  push:
+    branches: [review/sibling-endpoint-apple-confirmation-20260909]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e591fdc24b2e431eb7d05d3645f0f6029e2bb7d8
+          fetch-depth: 0
+      - name: Verify immutable source and prepare baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          test "$(git rev-parse HEAD)" = e591fdc24b2e431eb7d05d3645f0f6029e2bb7d8
+          test "$(git rev-parse HEAD^{tree})" = f73058258d742bbe3ad578fba8476b34cffc14e2
+          git rev-parse HEAD > "$RUNNER_TEMP/evidence/commit.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/evidence/source.tree"
+          swift --version > "$RUNNER_TEMP/evidence/toolchain.txt"
+          sw_vers >> "$RUNNER_TEMP/evidence/toolchain.txt"
+          uname -m >> "$RUNNER_TEMP/evidence/toolchain.txt"
+          /bin/bash --version >> "$RUNNER_TEMP/evidence/toolchain.txt"
+          git worktree add --detach "$RUNNER_TEMP/baseline" 97e071d6d42794ebbca7716a22605176325c6445
+      - name: Build full shipping libraries and matching public clients before timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          for side in baseline candidate; do
+            if [ "$side" = baseline ]; then source="$RUNNER_TEMP/baseline"; else source="$GITHUB_WORKSPACE"; fi
+            library="$RUNNER_TEMP/$side-library"
+            mkdir -p "$library"
+            swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path "$library/SwiftSoup.swiftmodule" "$source"/Sources/*.swift -o "$library/libSwiftSoup.dylib" > "$RUNNER_TEMP/evidence/build-$side.log" 2>&1
+            swiftc -swift-version 6 -O Tools/benchmark_sibling_endpoints.swift -I "$library" -L "$library" -lSwiftSoup -o "$library/client" >> "$RUNNER_TEMP/evidence/build-$side.log" 2>&1
+            shasum -a 256 "$library/libSwiftSoup.dylib" "$library/client" >> "$RUNNER_TEMP/evidence/binary-sha256.txt"
+          done
+          git status --porcelain > "$RUNNER_TEMP/evidence/candidate-status.txt"
+          git -C "$RUNNER_TEMP/baseline" status --porcelain > "$RUNNER_TEMP/evidence/baseline-status.txt"
+          test ! -s "$RUNNER_TEMP/evidence/candidate-status.txt"
+          test ! -s "$RUNNER_TEMP/evidence/baseline-status.txt"
+      - name: Balanced independent confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -S Tools/compare_sibling_endpoints.py --baseline-client "$RUNNER_TEMP/baseline-library/client" --candidate-client "$RUNNER_TEMP/candidate-library/client" --baseline-library "$RUNNER_TEMP/baseline-library" --candidate-library "$RUNNER_TEMP/candidate-library" --output "$RUNNER_TEMP/evidence/confirmation" --blocks 8 --ms 200 > "$RUNNER_TEMP/evidence/confirmation.log" 2>&1
+      - name: True same-binary control
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -S Tools/compare_sibling_endpoints.py --baseline-client "$RUNNER_TEMP/baseline-library/client" --candidate-client "$RUNNER_TEMP/candidate-library/client" --baseline-library "$RUNNER_TEMP/baseline-library" --candidate-library "$RUNNER_TEMP/candidate-library" --output "$RUNNER_TEMP/evidence/aa" --blocks 8 --ms 160 --aa > "$RUNNER_TEMP/evidence/aa.log" 2>&1
+          test "$(git rev-parse HEAD^{tree})" = f73058258d742bbe3ad578fba8476b34cffc14e2
+          git status --porcelain > "$RUNNER_TEMP/evidence/final-status.txt"
+          test ! -s "$RUNNER_TEMP/evidence/final-status.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sibling-endpoint-apple-confirmation
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30
