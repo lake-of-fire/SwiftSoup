@@ -1,0 +1,124 @@
+name: Validate and publish independent hotspots
+on:
+  push:
+    branches: [review/independent-hotspots-20260909]
+    paths: [.github/workflows/independent-native-publication.yml]
+permissions:
+  contents: write
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [position, css, baseline]
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    env:
+      CANDIDATE: ${{ matrix.candidate }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare hash-verified source on immutable master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p /tmp/independent-input /tmp/independent-evidence
+          cp Study/IndependentHotspots/*.swift /tmp/independent-input/
+          git checkout --detach 5d593583469c49d3c84449f28251b4cf201042a8
+          python3 - <<'PY'
+          import os, hashlib, shutil
+          from pathlib import Path
+          candidate = os.environ['CANDIDATE']
+          tests = {
+              'position': ('ElementSiblingPositionTest.swift', 'bed0646683da05b6a8f667f330f58f2bfc03368cc193e08f709aa081470fac41'),
+              'css': ('CSSCommentFastPathTest.swift', '1d29999b38ca17a318cc0afa0a5922ad0e66d12ef09f2d0d5aa234db9455c7cb')
+          }
+          for key in (tests if candidate == 'baseline' else [candidate]):
+              name, expected = tests[key]
+              data = (Path('/tmp/independent-input') / name).read_bytes()
+              assert hashlib.sha256(data).hexdigest() == expected, name
+              (Path('Tests/SwiftSoupTests') / name).write_bytes(data)
+          if candidate == 'position':
+              p = Path('Sources/Element.swift')
+              s = p.read_text()
+              old = '        let x = try Element.indexInList(self, parent()?.children().array())\n'
+              new = '''        let parent = parent()
+                  if let parent {
+                      let parentType = type(of: parent)
+                      if parentType == Element.self || parentType == Document.self || parentType == FormElement.self {
+                          // Built-in parents expose childNodes in order. Count elements without
+                          // allocating the complete filtered list or trusting siblingIndex.
+                          var index = 0
+                          for node in parent.childNodes {
+                              if let element = node as? Element {
+                                  if element === self { return index }
+                                  index += 1
+                              }
+                          }
+                          return 0
+                      }
+                  }
+                  // Preserve custom parent()/children()/array() views, including a nil
+                  // second parent() result and its original validation error.
+                  let x = try Element.indexInList(self, parent?.children().array())
+          '''
+              assert s.count(old) == 1
+              p.write_text(s.replace(old, new))
+              assert hashlib.sha256(p.read_bytes()).hexdigest() == '5954113247d65656a7e9007e9a22c73f8b88a81e7c6425d0f33f0a1624e5ab14'
+          elif candidate == 'css':
+              p = Path('Sources/Whitelist.swift')
+              s = p.read_text()
+              old = '    private func stripCSSComments(_ style: String) -> String {\n'
+              new = old + '''        // A comment cannot start without an ASCII slash. Leave the existing
+                  // quote/escape-aware scanner authoritative whenever one is present.
+                  guard style.utf8.contains(0x2F) else { return style }
+          '''
+              assert s.count(old) == 1
+              p.write_text(s.replace(old, new))
+              assert hashlib.sha256(p.read_bytes()).hexdigest() == 'f5fb41b6896405b020cc88343831fc5e9141c74221ff1aa4254159d56f00409a'
+          PY
+          git diff --check
+          swift --version | tee /tmp/independent-evidence/toolchain.txt
+      - name: Native standalone release suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -c release -j 2 2>&1 | tee /tmp/independent-evidence/release.log
+      - name: Publish only verified new production branches
+        if: matrix.candidate != 'baseline'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$CANDIDATE" = position ]; then
+            branch=perf/element-sibling-position-20260909
+            runtime=Sources/Element.swift
+            test=Tests/SwiftSoupTests/ElementSiblingPositionTest.swift
+            message='Avoid materializing sibling lists for element position lookup'
+          else
+            branch=perf/css-comment-free-cleaning-20260909
+            runtime=Sources/Whitelist.swift
+            test=Tests/SwiftSoupTests/CSSCommentFastPathTest.swift
+            message='Skip comment reconstruction for slash-free inline CSS'
+          fi
+          if git ls-remote --exit-code --heads origin "$branch"; then
+            echo 'Refusing to overwrite an existing branch' >&2
+            exit 1
+          fi
+          git checkout -b "$branch"
+          git add "$runtime" "$test"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "$message"
+          git push origin "HEAD:refs/heads/$branch"
+          git rev-parse HEAD > /tmp/independent-evidence/head.txt
+          git rev-parse HEAD^{tree} > /tmp/independent-evidence/tree.txt
+          git ls-tree -r HEAD > /tmp/independent-evidence/full-tree.txt
+          git diff HEAD^ HEAD > /tmp/independent-evidence/published.patch
+          git archive HEAD | gzip > /tmp/independent-evidence/published-source.tar.gz
+          printf '%s\n' "$branch" > /tmp/independent-evidence/branch.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: independent-native-${{ matrix.candidate }}
+          path: /tmp/independent-evidence/
+          retention-days: 14
