@@ -60,15 +60,20 @@ public class  Matcher {
 
     @discardableResult
     public func find() -> Bool {
+        // Stay exhausted after the last match instead of advancing indefinitely.
+        guard index < matches.count else { return false }
         index += 1
-        if(index < matches.count) {
-            return true
-        }
-        return false
+        return index < matches.count
     }
 
+    /// Returns capture `i` from the current match (zero is the entire match).
+    /// Returns nil before a successful `find()`, after exhaustion, for an invalid
+    /// group index, or for an optional group that did not participate. A present
+    /// zero-length capture returns an empty string.
     public func group(_ i: Int) -> String? {
+        guard matches.indices.contains(index) else { return nil }
         let b = matches[index]
+        guard i >= 0 && i < b.numberOfRanges else { return nil }
         #if !os(Linux) && !swift(>=4)
             let c = b.rangeAt(i)
         #else
@@ -76,8 +81,9 @@ public class  Matcher {
         #endif
 
         if(c.location == NSNotFound) {return nil}
-        let result = string.substring(c.location, c.length)
-        return result
+        // Foundation ranges are UTF-16 offsets, not Swift Character offsets.
+        // NSString also preserves scalar captures inside a composed grapheme.
+        return (string as NSString).substring(with: c)
     }
     public func group() -> String? {
         return group(0)
