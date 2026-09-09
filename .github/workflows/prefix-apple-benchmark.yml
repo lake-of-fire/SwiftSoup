@@ -1,0 +1,62 @@
+name: Apple confirmation of token prefix cursors
+on:
+  push:
+    branches: [review/cursor-move-qualification-20260909]
+    paths: [.github/workflows/prefix-apple-benchmark.yml]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare immutable matching sources and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/prefix-evidence /tmp/prefix-base-lib /tmp/prefix-candidate-lib
+          git worktree add --detach /tmp/prefix-base fc7743a0f87ff117c4b8bb52dc4ca5befc958173
+          git worktree add --detach /tmp/prefix-candidate 0aa13e0b536841406443e31a0335c0be287572b7
+          test "$(git -C /tmp/prefix-base rev-parse HEAD^{tree})" = d43369e18b00fdfc6e9431bf7979435707cb10b4
+          test "$(git -C /tmp/prefix-candidate rev-parse HEAD^{tree})" = 8a1c2eedc838aadcc8aadbafd276f48f45ac005b
+          swift --version > /tmp/prefix-evidence/toolchain.txt
+          sw_vers > /tmp/prefix-evidence/os.txt
+          uname -a >> /tmp/prefix-evidence/os.txt
+          python3 -m venv /tmp/prefix-env
+          /tmp/prefix-env/bin/python -m pip install numpy scipy > /tmp/prefix-evidence/dependency-install.log 2>&1
+          /tmp/prefix-env/bin/python -m pip freeze > /tmp/prefix-evidence/dependencies.txt
+      - name: Build full shipping libraries and matching public clients before timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in base candidate; do
+            source=/tmp/prefix-$v
+            lib=/tmp/prefix-$v-lib
+            swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path "$lib/SwiftSoup.swiftmodule" "$source"/Sources/*.swift -o "$lib/libSwiftSoup.dylib" 2>&1 | tee "/tmp/prefix-evidence/build-$v.log"
+            swiftc -swift-version 6 -O /tmp/prefix-candidate/Tools/benchmark_cursor_moves.swift -I "$lib" -L "$lib" -lSwiftSoup -o "$lib/client" 2>&1 | tee -a "/tmp/prefix-evidence/build-$v.log"
+            git -C "$source" rev-parse HEAD HEAD^{tree} > "/tmp/prefix-evidence/source-$v.txt"
+            shasum -a 256 "$lib/libSwiftSoup.dylib" "$lib/client" >> /tmp/prefix-evidence/binary-identities.txt
+          done
+      - name: Balanced fresh-process A/B and true same-binary A/A
+        env:
+          OPENBLAS_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for comparison in ab aa; do
+            if [ "$comparison" = aa ]; then extra='--aa --ms 160'; else extra='--ms 200'; fi
+            /tmp/prefix-env/bin/python /tmp/prefix-candidate/Tools/compare_cursor_moves.py --baseline-client /tmp/prefix-base-lib/client --candidate-client /tmp/prefix-candidate-lib/client --baseline-library /tmp/prefix-base-lib --candidate-library /tmp/prefix-candidate-lib --suite region --workloads region-short region-unicode-512 region-long-tail prefix-short prefix-unicode-512 parse-selector parse-control --blocks 8 $extra --output "/tmp/prefix-evidence/$comparison" 2>&1 | tee "/tmp/prefix-evidence/$comparison.log"
+          done
+          git -C /tmp/prefix-base diff --exit-code HEAD
+          git -C /tmp/prefix-candidate diff --exit-code HEAD
+          test -z "$(git -C /tmp/prefix-base ls-files --others --exclude-standard)"
+          test -z "$(git -C /tmp/prefix-candidate ls-files --others --exclude-standard)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prefix-apple-confirmation
+          path: /tmp/prefix-evidence/
+          retention-days: 30
