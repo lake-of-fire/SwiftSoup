@@ -299,19 +299,26 @@ open class TokenQueue {
      - returns: data matched from the queue
      */
     open func chompBalanced(_ open: Character, _ close: Character) -> String {
+        return chompBalanced(open, close, preservingDelimiters: false)
+    }
+
+    private func chompBalanced(_ open: Character, _ close: Character, preservingDelimiters: Bool) -> String {
         let start = queue.index(queue.startIndex, offsetBy: pos)
         // CSS delimiters are code points. A combining mark can share their
         // Character, and a Unicode prepend character can absorb a following
         // closer. Preserve the public API's multi-scalar delimiters as well.
         if open.unicodeScalars.count == 1, close.unicodeScalars.count == 1,
            let openScalar = open.unicodeScalars.first, let closeScalar = close.unicodeScalars.first {
-            return chompBalanced(in: queue.unicodeScalars, from: start, open: openScalar, close: closeScalar)
+            return chompBalanced(in: queue.unicodeScalars, from: start, open: openScalar, close: closeScalar,
+                                 preservingDelimiters: preservingDelimiters)
         }
-        return chompBalanced(in: queue, from: start, open: open, close: close)
+        return chompBalanced(in: queue, from: start, open: open, close: close,
+                             preservingDelimiters: preservingDelimiters)
     }
 
     private func chompBalanced<Characters: Collection>(in characters: Characters, from start: String.Index,
-                                                      open: Characters.Element, close: Characters.Element) -> String
+                                                      open: Characters.Element, close: Characters.Element,
+                                                      preservingDelimiters: Bool) -> String
         where Characters.Index == String.Index,
               Characters.Element: Equatable & ExpressibleByUnicodeScalarLiteral {
         var cursor = start
@@ -344,7 +351,12 @@ open class TokenQueue {
                 payloadEnd = cursor // don't include the outer match pair
             }
         } while depth > 0
-        let result = payloadStart.map { String(decoding: queue.utf8[$0..<payloadEnd], as: UTF8.self) } ?? ""
+        // A compound selector must retain the actual source spelling, including
+        // partial input. Rebuilding open + payload + close invents a delimiter at
+        // EOF and can bypass the inner numeric parser or change literal content.
+        let result = preservingDelimiters
+            ? String(decoding: queue.utf8[start..<cursor], as: UTF8.self)
+            : payloadStart.map { String(decoding: queue.utf8[$0..<payloadEnd], as: UTF8.self) } ?? ""
         advanceCssPosition(from: start, to: cursor)
         return result
     }
@@ -356,16 +368,19 @@ open class TokenQueue {
      */
     public static func unescape(_ input: String) -> String {
         let out = StringBuilder()
-        var last = empty
-        for c in input {
-            if (c == ESC) {
-                if (last != empty && last == TokenQueue.ESC) {
-                    out.append(c)
-                }
+        var escaped = false
+        // Quote one scalar at a time, including within a Swift grapheme. A run
+        // of backslashes is consumed in pairs; a trailing lone escape is dropped
+        // as before. This is text unescaping, not CSS hexadecimal decoding.
+        for scalar in input.unicodeScalars {
+            if escaped {
+                out.appendCodePoint(scalar)
+                escaped = false
+            } else if scalar == "\\" {
+                escaped = true
             } else {
-                out.append(c)
+                out.appendCodePoint(scalar)
             }
-            last = c
         }
         return out.toString()
     }
@@ -524,9 +539,7 @@ open class TokenQueue {
             } else if byte == 0x28 || byte == 0x5B {
                 let open: Character = byte == 0x28 ? "(" : "["
                 let close: Character = byte == 0x28 ? ")" : "]"
-                result.append(open)
-                result.append(chompBalanced(open, close))
-                result.append(close)
+                result.append(chompBalanced(open, close, preservingDelimiters: true))
             } else if TokenQueue.isCssSubQueryBoundary(byte) {
                 break
             } else {
