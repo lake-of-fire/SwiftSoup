@@ -6,28 +6,74 @@ on:
 permissions:
   contents: read
 jobs:
-  source:
+  linux:
     runs-on: ubuntu-22.04
-    timeout-minutes: 5
+    container: swift:6.1
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 5d593583469c49d3c84449f28251b4cf201042a8
+          ref: de6bde891f4c7be3dc9b926fb5c370c6263325c8
           persist-credentials: false
-      - name: Export immutable baseline
+      - name: Verify source identity
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 5d593583469c49d3c84449f28251b4cf201042a8
-          test "$(git rev-parse HEAD^{tree})" = e06cc2ec7a79a869a6e81f4d8b591cc127288db2
-          mkdir -p "$RUNNER_TEMP/matcher-source"
-          git archive --format=tar HEAD | gzip -n > "$RUNNER_TEMP/matcher-source/SwiftSoup-baseline.tar.gz"
-          git ls-tree -r HEAD > "$RUNNER_TEMP/matcher-source/tree.txt"
-          sha256sum "$RUNNER_TEMP/matcher-source/SwiftSoup-baseline.tar.gz" > "$RUNNER_TEMP/matcher-source/SHA256SUMS"
-          test -z "$(git status --porcelain)"
+          mkdir -p "$RUNNER_TEMP/matcher-validation"
+          test "$(git rev-parse HEAD)" = de6bde891f4c7be3dc9b926fb5c370c6263325c8
+          test "$(git rev-parse HEAD^{tree})" = 4ca8e3a060fca36d3c2941534a280b565324481f
+          { git rev-parse HEAD HEAD^{tree}; swift --version; } | tee "$RUNNER_TEMP/matcher-validation/identity.txt"
+      - name: Debug
+        shell: bash
+        run: set -euo pipefail; swift test -j 4 2>&1 | tee "$RUNNER_TEMP/matcher-validation/debug.log"
+      - name: Release
+        shell: bash
+        run: set -euo pipefail; swift test -j 4 -c release 2>&1 | tee "$RUNNER_TEMP/matcher-validation/release.log"
+      - name: AddressSanitizer
+        shell: bash
+        run: set -euo pipefail; ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$RUNNER_TEMP/matcher-validation/asan.log"
+      - name: Verify unchanged checkout
+        shell: bash
+        run: test -z "$(git status --porcelain)"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: matcher-capture-baseline
-          path: ${{ runner.temp }}/matcher-source/
+          name: matcher-capture-linux
+          path: ${{ runner.temp }}/matcher-validation/
+          if-no-files-found: error
+          retention-days: 14
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: de6bde891f4c7be3dc9b926fb5c370c6263325c8
+          persist-credentials: false
+      - name: Verify source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/matcher-validation"
+          test "$(git rev-parse HEAD)" = de6bde891f4c7be3dc9b926fb5c370c6263325c8
+          test "$(git rev-parse HEAD^{tree})" = 4ca8e3a060fca36d3c2941534a280b565324481f
+          { git rev-parse HEAD HEAD^{tree}; swift --version; } | tee "$RUNNER_TEMP/matcher-validation/identity.txt"
+      - name: Debug
+        shell: bash
+        run: set -euo pipefail; swift test -j 4 2>&1 | tee "$RUNNER_TEMP/matcher-validation/debug.log"
+      - name: Release
+        shell: bash
+        run: set -euo pipefail; swift test -j 4 -c release 2>&1 | tee "$RUNNER_TEMP/matcher-validation/release.log"
+      - name: AddressSanitizer
+        shell: bash
+        run: set -euo pipefail; ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$RUNNER_TEMP/matcher-validation/asan.log"
+      - name: Verify unchanged checkout
+        shell: bash
+        run: test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: matcher-capture-macos
+          path: ${{ runner.temp }}/matcher-validation/
           if-no-files-found: error
           retention-days: 14
