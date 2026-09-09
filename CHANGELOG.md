@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Reduce cold deferred-name validation work with a bounded mask prefilter and exact collision checks. Keep ambiguous batches and byte-distinct Unicode names on the same canonical materialization contract.
+* Make deferred attribute lookups and serialization agree with materialized storage. Preserve the existing first-position/last-value rule for exact duplicate names, first matching case-variant lookup, trimmed valid keys, and byte-name precedence. Ordinary unique attribute batches remain deferred; ambiguous batches materialize before reads rather than changing their answers later.
+* Use wrapping integer arithmetic in `Attribute.hashCode()` so hash mixing cannot trap on overflow.
+* Avoid repeated membership scans when exposing singly owned attribute lists or iterators. Mutation notifications still validate every owner by identity, and multi-owner cleanup remains unchanged.
 * Include comment contents in `Element.data()` and `:containsData`, as documented, in descendant document order. Traverse iteratively without intermediate subtree strings or materializing single-slice data nodes. Custom DataNode getter overrides remain respected. Queries previously ignoring comment contents may now match.
 * Observe direct `Attribute.setKey` / `setValue` edits through every live owning collection and node, including references shared by `put` / `addAll`. Removed or replaced references no longer invalidate former owners. Reads that materialize deferred text/data do not count as DOM mutations.
 * Clone mutable attribute objects independently, including implicit boolean attributes, while retaining immutable byte storage sharing. Cloned DOM mutations no longer change the original. Attribute keys that are empty after trimming are rejected before mutation.

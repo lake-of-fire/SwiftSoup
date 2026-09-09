@@ -422,7 +422,8 @@ open class Attribute {
     @inline(__always)
     public func hashCode() -> Int {
         var result = keySlice.hashValue
-        result = 31 * result + valueSliceMaterialized().hashValue
+        // Hash mixing intentionally wraps at the machine word boundary.
+        result = (31 &* result) &+ valueSliceMaterialized().hashValue
         return result
     }
     
