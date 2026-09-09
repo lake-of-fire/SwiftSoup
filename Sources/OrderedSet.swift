@@ -143,11 +143,14 @@ public class OrderedSet<T: Hashable> {
 	public func swapObject(_ first: T, with second: T) {
 		if let firstPosition = contents[first] {
 			if let secondPosition = contents[second] {
-				contents[first] = secondPosition
-				contents[second] = firstPosition
-
-				sequencedContents[firstPosition] = second
-				sequencedContents[secondPosition] = first
+				guard firstPosition != secondPosition else { return }
+				// Arguments identify members; a swap must not replace the stored
+				// representatives with equal-but-distinct lookup values.
+				let storedFirst = sequencedContents[firstPosition]
+				let storedSecond = sequencedContents[secondPosition]
+				contents[storedFirst] = secondPosition
+				contents[storedSecond] = firstPosition
+				sequencedContents.swapAt(firstPosition, secondPosition)
 			}
 		}
 	}
@@ -169,18 +172,22 @@ public class OrderedSet<T: Hashable> {
 	}
 
 	/**
-	Tests if a the ordered set is a subset of another sequence.
+	Tests if the ordered set is a subset of another sequence.
+	The input is consumed at most once and stops when all members are found.
+	Temporary membership storage is bounded by the receiver count.
 	- parameter    sequence:   The sequence to check.
 	- returns:                 true if the sequence contains all objects contained in the receiver, otherwise false.
 	*/
 	public func isSubset<S: Sequence>(of sequence: S) -> Bool where S.Iterator.Element == T {
-		for (object, _) in contents {
-			if !sequence.contains(object) {
-				return false
-			}
+		guard !contents.isEmpty else { return true }
+		// Sequence need not be restartable. Track required members while
+		// consuming a single iterator, without retaining the input's tail.
+		var remaining = Set(contents.keys)
+		for object in sequence {
+			remaining.remove(object)
+			if remaining.isEmpty { return true }
 		}
-
-		return true
+		return false
 	}
 
 	/**
