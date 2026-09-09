@@ -1,0 +1,125 @@
+name: Qualify adjacent move refinement
+on:
+  push:
+    branches: [review/cursor-move-qualification-20260909]
+    paths: [.github/workflows/adjacent-move-refinement.yml]
+permissions:
+  contents: read
+jobs:
+  qualify:
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: isolated
+            tree: 9fb314d76c49f3af9849cc341e4d7bb30d90047f
+          - variant: combined
+            tree: 68c4d3c44c6623d57c1734e031746c105c7a486a
+    env:
+      VARIANT: ${{ matrix.variant }}
+      EXPECTED_TREE: ${{ matrix.tree }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct refinement on verified source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name 'SwiftSoup optimization worker'
+          git config user.email 'actions@users.noreply.github.com'
+          mkdir -p /tmp/refinement-evidence
+          git checkout --detach 49be548e22c47a5dbe3cdb4767afc988b57399c0
+          test "$(git rev-parse HEAD^{tree})" = 882e9d8356e2aad287c347477cbd76c013be0c01
+          if [ "$VARIANT" = combined ]; then
+            git merge --no-ff --no-edit 0aa13e0b536841406443e31a0335c0be287572b7
+            git merge --no-ff --no-edit 053e315b82c204bf93398f70cb6834206c8fc8fc
+            git merge --no-ff --no-edit 31de9e42c160f6478cc6b2718094626843f68920
+            test "$(git rev-parse HEAD^{tree})" = f7f67b03f129aeaea26692ffbb52ee708dbdfd91
+          fi
+          cat >/tmp/refinement.patch <<'PATCH'
+          --- a/Sources/OrderedSet.swift
+          +++ b/Sources/OrderedSet.swift
+          @@ -204,6 +204,15 @@
+           
+           			// Keep the stored representative, not a possibly equal incoming object.
+           			let moved = sequencedContents[position]
+          +			// A one-step move needs only the original direct swap, not a shift loop.
+          +			if position == index - 1 || position == index + 1 {
+          +				let displaced = sequencedContents[index]
+          +				sequencedContents[position] = displaced
+          +				sequencedContents[index] = moved
+          +				contents[moved] = index
+          +				contents[displaced] = position
+          +				return
+          +			}
+           			if position < index {
+           				for i in position..<index {
+           					let shifted = sequencedContents[i + 1]
+          PATCH
+          git apply --index /tmp/refinement.patch
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --cached --check
+          git diff --exit-code
+          swift --version > /tmp/refinement-evidence/toolchain.txt
+          echo "$EXPECTED_TREE" > /tmp/refinement-evidence/source-tree.txt
+          git ls-tree -r "$EXPECTED_TREE" > /tmp/refinement-evidence/source.tree
+          git archive "$EXPECTED_TREE" | gzip > /tmp/refinement-evidence/source.tar.gz
+          git diff --cached > /tmp/refinement-evidence/refinement.patch
+      - name: Complete release and AddressSanitizer suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -j 4 -c release 2>&1 | tee /tmp/refinement-evidence/release.log
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/refinement-evidence/asan.log
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+      - name: Fast-forward only the unchanged study branch
+        if: matrix.variant == 'isolated'
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=perf/ordered-set-shift-moves-20260909
+          test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = 49be548e22c47a5dbe3cdb4767afc988b57399c0
+          commit=$(git commit-tree "$EXPECTED_TREE" -p 49be548e22c47a5dbe3cdb4767afc988b57399c0 -m 'Keep adjacent ordered-set moves on a direct swap')
+          git push origin "$commit:refs/heads/$branch"
+          echo "$commit" > /tmp/refinement-evidence/published-commit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: refined-move-linux-${{ matrix.variant }}
+          path: /tmp/refinement-evidence/
+          retention-days: 30
+  apple:
+    needs: qualify
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/ordered-set-shift-moves-20260909
+          fetch-depth: 3
+      - name: Check exact final source and full suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/refinement-evidence
+          test "$(git rev-parse HEAD^{tree})" = 9fb314d76c49f3af9849cc341e4d7bb30d90047f
+          test "$(git rev-parse HEAD^)" = 49be548e22c47a5dbe3cdb4767afc988b57399c0
+          git rev-parse HEAD HEAD^{tree} > /tmp/refinement-evidence/identity.txt
+          swift --version > /tmp/refinement-evidence/toolchain.txt
+          swift test -j 4 -c release 2>&1 | tee /tmp/refinement-evidence/release.log
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/refinement-evidence/asan.log
+          git diff --exit-code HEAD
+          test -z "$(git ls-files --others --exclude-standard)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: refined-move-apple
+          path: /tmp/refinement-evidence/
+          retention-days: 30
