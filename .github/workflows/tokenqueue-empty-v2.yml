@@ -1,0 +1,68 @@
+name: TokenQueue empty delimiter qualification
+on:
+  push:
+    branches: [audit/deeper-correctness-20260909]
+    paths: [.github/workflows/tokenqueue-empty-v2.yml]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.publish.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 97e071d6d42794ebbca7716a22605176325c6445
+          fetch-depth: 0
+      - id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 97e071d6d42794ebbca7716a22605176325c6445
+          test "$(git ls-remote origin refs/heads/master | cut -f1)" = 97e071d6d42794ebbca7716a22605176325c6445
+          test -z "$(git ls-remote origin refs/heads/fix/tokenqueue-empty-ignorecase-20260909)"
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          p = Path('Sources/TokenQueue.swift')
+          text = p.read_text()
+          old = '    open func consumeToIgnoreCase(_ seq: String) -> String {\n        let start = pos\n'
+          new = '    open func consumeToIgnoreCase(_ seq: String) -> String {\n        guard !seq.isEmpty else { return "" }\n        let start = pos\n'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, new))
+          test_b64 = 'aW1wb3J0IFhDVGVzdAppbXBvcnQgU3dpZnRTb3VwCgpmaW5hbCBjbGFzcyBUb2tlblF1ZXVlRW1wdHlJZ25vcmVDYXNlRGVsaW1pdGVyVGVzdDogWENUZXN0Q2FzZSB7CiAgICBmdW5jIHRlc3RDb25zdW1lVG9JZ25vcmVDYXNlRW1wdHlEZWxpbWl0ZXJJc05vT3AoKSB7CiAgICAgICAgbGV0IHF1ZXVlID0gVG9rZW5RdWV1ZSgiQWJDIikKICAgICAgICBYQ1RBc3NlcnRFcXVhbChxdWV1ZS5jb25zdW1lVG9JZ25vcmVDYXNlKCIiKSwgIiIpCiAgICAgICAgWENUQXNzZXJ0RXF1YWwocXVldWUucmVtYWluZGVyKCksICJBYkMiKQogICAgfQoKICAgIGZ1bmMgdGVzdENob21wVG9JZ25vcmVDYXNlRW1wdHlEZWxpbWl0ZXJJc05vT3AoKSB7CiAgICAgICAgbGV0IHF1ZXVlID0gVG9rZW5RdWV1ZSgiQWJDIikKICAgICAgICBYQ1RBc3NlcnRFcXVhbChxdWV1ZS5jaG9tcFRvSWdub3JlQ2FzZSgiIiksICIiKQogICAgICAgIFhDVEFzc2VydEVxdWFsKHF1ZXVlLnJlbWFpbmRlcigpLCAiQWJDIikKICAgIH0KCiAgICBmdW5jIHRlc3RFbXB0eURlbGltaXRlckFmdGVyUHJpb3JDb25zdW1wdGlvblByZXNlcnZlc1Bvc2l0aW9uKCkgewogICAgICAgIGxldCBxdWV1ZSA9IFRva2VuUXVldWUoIkFiQyIpCiAgICAgICAgWENUQXNzZXJ0VHJ1ZShxdWV1ZS5tYXRjaENob21wKCJBIikpCiAgICAgICAgWENUQXNzZXJ0RXF1YWwocXVldWUuY29uc3VtZVRvSWdub3JlQ2FzZSgiIiksICIiKQogICAgICAgIFhDVEFzc2VydEVxdWFsKHF1ZXVlLnJlbWFpbmRlcigpLCAiYkMiKQogICAgfQoKICAgIGZ1bmMgdGVzdEVtcHR5RGVsaW1pdGVyTWF0Y2hlc0Nhc2VTZW5zaXRpdmVDb250cmFjdCgpIHsKICAgICAgICBsZXQgc2Vuc2l0aXZlID0gVG9rZW5RdWV1ZSgiQWJDIikKICAgICAgICBsZXQgaW5zZW5zaXRpdmUgPSBUb2tlblF1ZXVlKCJBYkMiKQogICAgICAgIFhDVEFzc2VydEVxdWFsKHNlbnNpdGl2ZS5jb25zdW1lVG8oIiIpLCBpbnNlbnNpdGl2ZS5jb25zdW1lVG9JZ25vcmVDYXNlKCIiKSkKICAgICAgICBYQ1RBc3NlcnRFcXVhbChzZW5zaXRpdmUucmVtYWluZGVyKCksIGluc2Vuc2l0aXZlLnJlbWFpbmRlcigpKQogICAgfQoKICAgIGZ1bmMgdGVzdEVtcHR5UXVldWVBbHNvQWNjZXB0c0VtcHR5RGVsaW1pdGVyKCkgewogICAgICAgIGxldCBxdWV1ZSA9IFRva2VuUXVldWUoIiIpCiAgICAgICAgWENUQXNzZXJ0RXF1YWwocXVldWUuY29uc3VtZVRvSWdub3JlQ2FzZSgiIiksICIiKQogICAgICAgIFhDVEFzc2VydEVxdWFsKHF1ZXVlLmNob21wVG9JZ25vcmVDYXNlKCIiKSwgIiIpCiAgICAgICAgWENUQXNzZXJ0VHJ1ZShxdWV1ZS5pc0VtcHR5KCkpCiAgICB9Cn0K'
+          Path('Tests/SwiftSoupTests/TokenQueueEmptyIgnoreCaseDelimiterTest.swift').write_bytes(base64.b64decode(test_b64))
+          PY
+          git add Sources/TokenQueue.swift Tests/SwiftSoupTests/TokenQueueEmptyIgnoreCaseDelimiterTest.swift
+          git diff --cached --check
+          test "$(git hash-object Sources/TokenQueue.swift)" = 9165308a41a7b9d1f5f458b696c0d3c63e8a1557
+          test "$(git hash-object Tests/SwiftSoupTests/TokenQueueEmptyIgnoreCaseDelimiterTest.swift)" = 0087fdd80a8d7cab06b29008c5cea81513f74ab1
+          swift test -j 4 --filter TokenQueueEmptyIgnoreCaseDelimiterTest
+          git config user.name 'OpenAI assistant'
+          git config user.email noreply@openai.com
+          git commit -m 'Handle empty case-insensitive TokenQueue delimiters'
+          git push origin HEAD:refs/heads/fix/tokenqueue-empty-ignorecase-20260909
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  native:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.commit }}
+          persist-credentials: false
+      - name: Full exact-source suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -j 4
+          swift test -j 4 -c release
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address
+          test -z "$(git status --porcelain --untracked-files=all)"
