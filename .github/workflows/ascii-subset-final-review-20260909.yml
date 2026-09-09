@@ -1,0 +1,193 @@
+name: Final ASCII and ordered-set review
+on:
+  push:
+    branches: [audit/ascii-subset-final-review-20260909]
+permissions:
+  contents: read
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  ASAN_OPTIONS: detect_leaks=0
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a5b0d2afc1b66681906f7af0dff30f5ba271c48c
+          fetch-depth: 0
+          path: candidate
+      - uses: actions/checkout@v4
+        with:
+          ref: 97e071d6d42794ebbca7716a22605176325c6445
+          path: baseline
+      - uses: actions/checkout@v4
+        with:
+          ref: 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          path: combined
+      - name: Freeze and compose exact sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          swift --version > evidence/toolchain.txt
+          for dir in baseline candidate combined; do
+            git config --global --add safe.directory "$GITHUB_WORKSPACE/$dir"
+            git -C "$dir" rev-parse HEAD HEAD^{tree} > "evidence/$dir-identity.txt"
+          done
+          test "$(git -C candidate rev-parse HEAD^{tree})" = e5aa701d2ff6795ca6b496e55d63ddff7b64fffe
+          test "$(git -C baseline rev-parse HEAD^{tree})" = b0160b101ebc04284cc60379ed4685945e54a208
+          test "$(git -C combined rev-parse HEAD^{tree})" = c175bef3bd8b5420aaa7827794e819e1287fa5cd
+          git -C candidate diff --full-index 97e071d6d42794ebbca7716a22605176325c6445 HEAD > evidence/ascii.patch
+          git -C combined apply --index ../evidence/ascii.patch
+          test "$(git -C combined write-tree)" = 2d1c99402b880feb12f62c3279d913c0fda7fa67
+          git -C candidate ls-tree -r HEAD > evidence/candidate.tree
+          git -C combined ls-tree -r 2d1c99402b880feb12f62c3279d913c0fda7fa67 > evidence/combined.tree
+          git -C candidate archive HEAD | gzip > evidence/candidate-source.tar.gz
+          git -C combined archive 2d1c99402b880feb12f62c3279d913c0fda7fa67 | gzip > evidence/combined-source.tar.gz
+      - name: Debug release and ASan with nonempty arguments
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          for source in candidate combined; do
+            count=1247
+            if [ "$source" = combined ]; then count=1277; fi
+            for config in debug release asan; do
+              set +e
+              case "$config" in
+                debug) (cd "$source" && swift test -j 4 -c debug) > "evidence/$source-$config.log" 2>&1 ;;
+                release) (cd "$source" && swift test -j 4 -c release) > "evidence/$source-$config.log" 2>&1 ;;
+                asan) (cd "$source" && swift test -j 4 --sanitize address) > "evidence/$source-$config.log" 2>&1 ;;
+              esac
+              result=$?
+              set -e
+              echo "$result" > "evidence/$source-$config.exit"
+              if [ "$result" -ne 0 ]; then status=1; fi
+              if ! grep -q "Executed $count tests, with 17 tests skipped and 0 failures (0 unexpected)" "evidence/$source-$config.log"; then status=1; fi
+            done
+          done
+          test -z "$(git -C candidate status --porcelain)"
+          git -C combined diff --exit-code
+          test "$(git -C combined write-tree)" = 2d1c99402b880feb12f62c3279d913c0fda7fa67
+          exit "$status"
+      - name: Repository broad benchmark guard on both revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source in baseline candidate; do
+            (cd "$source" && SWIFTSOUP_BENCHMARK=1 SWIFTSOUP_BENCHMARK_SET=base,large SWIFTSOUP_BENCHMARK_REPEAT=200 SWIFTSOUP_BENCHMARK_LARGE_REPEAT=60 SWIFTSOUP_BENCHMARK_WARMUP=2 SWIFTSOUP_BENCHMARK_ITERATIONS=500 SWIFTSOUP_BENCHMARK_ITERATIONS_MULTIPLIER=1 SWIFTSOUP_BENCHMARK_SELECTOR_REPEAT=1 SWIFTSOUP_BENCHMARK_SELECTOR_STRESS_REPEAT=1 SWIFTSOUP_BENCHMARK_ATTRIBUTE_SELECTOR_STRESS_REPEAT=1 swift test -j 4 -c release --filter BenchmarkProfileTest/testParseBenchmarkProfile) > "evidence/$source-broad-guard.log" 2>&1
+            test -z "$(git -C "$source" status --porcelain)"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: final-review-linux
+          path: evidence
+          retention-days: 30
+  apple:
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1, 2]
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a5b0d2afc1b66681906f7af0dff30f5ba271c48c
+          fetch-depth: 0
+          path: candidate
+      - uses: actions/checkout@v4
+        with:
+          ref: 97e071d6d42794ebbca7716a22605176325c6445
+          path: baseline
+      - uses: actions/checkout@v4
+        with:
+          ref: 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          path: combined
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Freeze sources and validate the runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          test "$(uname -m)" = arm64
+          swift --version > evidence/toolchain.txt
+          sw_vers > evidence/host.txt
+          /bin/bash --version > evidence/bash.txt
+          for dir in baseline candidate combined; do
+            git -C "$dir" rev-parse HEAD HEAD^{tree} > "evidence/$dir-identity.txt"
+          done
+          test "$(git -C candidate rev-parse HEAD^{tree})" = e5aa701d2ff6795ca6b496e55d63ddff7b64fffe
+          test "$(git -C baseline rev-parse HEAD^{tree})" = b0160b101ebc04284cc60379ed4685945e54a208
+          test "$(git -C combined rev-parse HEAD^{tree})" = c175bef3bd8b5420aaa7827794e819e1287fa5cd
+          git -C candidate diff --full-index 97e071d6d42794ebbca7716a22605176325c6445 HEAD > evidence/ascii.patch
+          git -C combined apply --index ../evidence/ascii.patch
+          test "$(git -C combined write-tree)" = 2d1c99402b880feb12f62c3279d913c0fda7fa67
+          git -C candidate ls-tree -r HEAD > evidence/candidate.tree
+          git -C combined ls-tree -r 2d1c99402b880feb12f62c3279d913c0fda7fa67 > evidence/combined.tree
+          python -m unittest discover -s candidate/Tools/tests -v > evidence/runner-tests.log 2>&1
+          python -m pip install numpy scipy > evidence/python-install.log 2>&1
+          python -m pip freeze > evidence/python-versions.txt
+      - name: Full isolated and combined tests before timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          for source in candidate combined; do
+            count=1247
+            if [ "$source" = combined ]; then count=1277; fi
+            for config in debug release asan; do
+              set +e
+              case "$config" in
+                debug) (cd "$source" && swift test -j 4 -c debug) > "evidence/$source-$config.log" 2>&1 ;;
+                release) (cd "$source" && swift test -j 4 -c release) > "evidence/$source-$config.log" 2>&1 ;;
+                asan) (cd "$source" && swift test -j 4 --sanitize address) > "evidence/$source-$config.log" 2>&1 ;;
+              esac
+              result=$?
+              set -e
+              echo "$result" > "evidence/$source-$config.exit"
+              if [ "$result" -ne 0 ]; then status=1; fi
+              if ! grep -q "Executed $count tests, with 17 tests skipped and 0 failures (0 unexpected)" "evidence/$source-$config.log"; then status=1; fi
+            done
+          done
+          test -z "$(git -C candidate status --porcelain)"
+          git -C combined diff --exit-code
+          test "$(git -C combined write-tree)" = 2d1c99402b880feb12f62c3279d913c0fda7fa67
+          exit "$status"
+      - name: Build complete shipping libraries and prove dynamic loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p shipping/A shipping/B
+          for revision in A B; do
+            source=baseline
+            if [ "$revision" = B ]; then source=candidate; fi
+            swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path "shipping/$revision/SwiftSoup.swiftmodule" "$source"/Sources/*.swift -Xlinker -install_name -Xlinker '@rpath/libSwiftSoup.dylib' -o "shipping/$revision/libSwiftSoup.dylib" > "evidence/build-$revision.log" 2>&1
+          done
+          swiftc -swift-version 6 -O candidate/Tools/benchmark_character_classification.swift -I shipping/A -L shipping/A -lSwiftSoup -Xlinker -rpath -Xlinker "$PWD/shipping/A" -o shipping/client > evidence/build-client.log 2>&1
+          for revision in A B; do
+            env DYLD_PRINT_LIBRARIES=1 DYLD_LIBRARY_PATH="$PWD/shipping/$revision" shipping/client --verify > "evidence/public-$revision.json" 2> "evidence/dyld-$revision.log"
+            grep "$PWD/shipping/$revision/libSwiftSoup.dylib" "evidence/dyld-$revision.log"
+          done
+          cmp evidence/public-A.json evidence/public-B.json
+      - name: Independent balanced AB and true same-binary AA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python candidate/Tools/compare_character_classification.py --baseline-client shipping/client --candidate-client shipping/client --baseline-library shipping/A --candidate-library shipping/B --suite classification --blocks 8 --ms 180 --output evidence/ab > evidence/ab.log 2>&1
+          python candidate/Tools/compare_character_classification.py --baseline-client shipping/client --candidate-client shipping/client --baseline-library shipping/A --candidate-library shipping/B --suite classification --blocks 8 --ms 140 --aa --output evidence/aa > evidence/aa.log 2>&1
+          test -z "$(git -C candidate status --porcelain)"
+          test -z "$(git -C baseline status --porcelain)"
+          git -C combined diff --exit-code
+          test "$(git -C combined write-tree)" = 2d1c99402b880feb12f62c3279d913c0fda7fa67
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: final-review-apple-${{ matrix.trial }}
+          path: evidence
+          retention-days: 30
