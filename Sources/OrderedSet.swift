@@ -202,23 +202,23 @@ public class OrderedSet<T: Hashable> {
 				return
 			}
 
-			let adjustment = position > index ? -1 : 1
-
-			var currentIndex = position
-			while currentIndex != index {
-				let nextIndex = currentIndex + adjustment
-
-				let firstObject = sequencedContents[currentIndex]
-				let secondObject = sequencedContents[nextIndex]
-
-				sequencedContents[currentIndex] = secondObject
-				sequencedContents[nextIndex] = firstObject
-
-				contents[firstObject] = nextIndex
-				contents[secondObject] = currentIndex
-
-				currentIndex += adjustment
+			// Keep the stored representative, not a possibly equal incoming object.
+			let moved = sequencedContents[position]
+			if position < index {
+				for i in position..<index {
+					let shifted = sequencedContents[i + 1]
+					sequencedContents[i] = shifted
+					contents[shifted] = i
+				}
+			} else {
+				for i in stride(from: position, to: index, by: -1) {
+					let shifted = sequencedContents[i - 1]
+					sequencedContents[i] = shifted
+					contents[shifted] = i
+				}
 			}
+			sequencedContents[index] = moved
+			contents[moved] = index
 		}
 	}
 
