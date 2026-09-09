@@ -1,0 +1,55 @@
+name: Verified no-op review object publication
+on:
+  push:
+    branches: [review/verified-source-audit-20260909]
+    paths: [.github/workflows/review-publish-noop.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0a6464d837bfeb6505efc9e111d05eb70db5e3e9
+          persist-credentials: false
+      - name: Verify source and publish immutable objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, hashlib, json, os, pathlib, subprocess, urllib.request
+          repo = 'lake-of-fire/SwiftSoup'
+          base_tree = '2b9b3360aea70169ecda1d0e3f24f6f754d03e53'
+          expected_tree = '577179d4009fdb459b334319e25649faa96f5a2d'
+          def git(*args):
+              return subprocess.check_output(['git', *args]).decode().strip()
+          def api(path, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + path, data=data,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          assert git('rev-parse', 'HEAD') == '0a6464d837bfeb6505efc9e111d05eb70db5e3e9'
+          assert git('rev-parse', 'HEAD^{tree}') == base_tree
+          blob = api('/git/blobs/a9240e04e7ed39edc8052cfe0baccec7ce676813')
+          patch = base64.b64decode(blob['content'])
+          assert hashlib.sha256(patch).hexdigest() == '359fdc119624acbf7ca6dfe4f48940147ba6731e770adc98ccd11629e92ae298'
+          pathlib.Path('/tmp/review-noop.patch').write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', '/tmp/review-noop.patch'], check=True)
+          subprocess.run(['git', 'apply', '/tmp/review-noop.patch'], check=True)
+          subprocess.run(['git', 'add', '-A'], check=True)
+          assert git('write-tree') == expected_tree
+          paths = git('diff', '--cached', '--name-only').splitlines()
+          assert len(paths) == 4, paths
+          entries = []
+          for path in paths:
+              data = pathlib.Path(path).read_bytes()
+              sha = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+              actual = api('/git/blobs', {'content': base64.b64encode(data).decode(), 'encoding': 'base64'})['sha']
+              assert sha == actual, path
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': actual})
+          tree = api('/git/trees', {'base_tree': base_tree, 'tree': entries})['sha']
+          assert tree == expected_tree, tree
+          print('VERIFIED_TREE=' + tree)
+          print(json.dumps(entries, sort_keys=True))
