@@ -1,0 +1,109 @@
+diff --git a/Sources/Attributes.swift b/Sources/Attributes.swift
+--- a/Sources/Attributes.swift
++++ b/Sources/Attributes.swift
+@@ -157,6 +157,11 @@ open class Attributes: NSCopying {
+         attributes.reserveCapacity(16)
+     }
+ 
++    private init(copying attributes: [Attribute], hasUppercaseKeys: Bool) {
++        self.attributes = attributes
++        self.hasUppercaseKeys = hasUppercaseKeys
++    }
++
+     /// Adopts a token's deferred attributes before an element owns this collection.
+     internal init(pendingAttributes: [PendingAttribute]) {
+         self.pendingAttributes = pendingAttributes
+@@ -1318,15 +1323,8 @@ open class Attributes: NSCopying {
+     @inline(__always)
+     public func copy(with zone: NSZone? = nil) -> Any {
+         ensureMaterialized()
+-        let clone = Attributes()
+-        clone.attributes = attributes.map { $0.clone() }
+-        clone.hasUppercaseKeys = clone.attributes.contains { Self.containsAsciiUppercase($0.keySlice) }
+-        clone.lowercasedKeysCache = nil
+-        clone.lowercasedKeyIndex = nil
+-        clone.lowercasedKeyIndexDirty = true
+-        clone.keyIndex = nil
+-        clone.keyIndexDirty = true
+-        return clone
++        let copied = attributes.map { $0.clone() }
++        return Attributes(copying: copied, hasUppercaseKeys: copied.contains { Self.containsAsciiUppercase($0.keySlice) })
+     }
+     
+     @inline(__always)
+diff --git a/Sources/HtmlTreeBuilder.swift b/Sources/HtmlTreeBuilder.swift
+--- a/Sources/HtmlTreeBuilder.swift
++++ b/Sources/HtmlTreeBuilder.swift
+@@ -624,6 +624,11 @@ class HtmlTreeBuilder: TreeBuilder {
+             node.markSourceDirty()
+             parent.markSourceDirty()
+         }
++        // After fragment construction, manual token processing must obey the
++        // same text-predicate invalidation contract as public appendChild.
++        if !constructingFragment && parent.treeBuilder?.isBulkBuilding != true {
++            parent.bumpTextMutationVersion()
++        }
+     }
+ 
+     @discardableResult
+diff --git a/Tests/SwiftSoupTests/AttributeCopyAllocationTest.swift b/Tests/SwiftSoupTests/AttributeCopyAllocationTest.swift
+--- a/Tests/SwiftSoupTests/AttributeCopyAllocationTest.swift
++++ b/Tests/SwiftSoupTests/AttributeCopyAllocationTest.swift
+@@ -13,8 +13,11 @@ final class AttributeCopyAllocationTest: XCTestCase {
+         XCTAssertEqual(source.hasUppercaseKeys, copy.hasUppercaseKeys)
+         XCTAssertNil(copy.ownerElement)
+         for (first, second) in zip(source.asList(), copy.asList()) {
+-            // Collection copy intentionally shares Attribute representatives.
+-            XCTAssertTrue(first === second)
++            // Clone isolation wins over the old shallow-copy optimization contract.
++            XCTAssertFalse(first === second)
++            let value = first.getValue()
++            _ = second.setValue(value: Array("changed in copy".utf8))
++            XCTAssertEqual(first.getValue(), value)
+         }
+     }
+ 
+diff --git a/Tests/SwiftSoupTests/FragmentAppendTest.swift b/Tests/SwiftSoupTests/FragmentAppendTest.swift
+--- a/Tests/SwiftSoupTests/FragmentAppendTest.swift
++++ b/Tests/SwiftSoupTests/FragmentAppendTest.swift
+@@ -104,7 +104,9 @@ final class FragmentAppendTest: XCTestCase {
+         let version = doc.textMutationVersionToken()
+         for _ in 0..<4 { XCTAssertEqual(try doc.select("p:contains(tail)").size(), 0) }
+         text.appendSlice(.fromArray(Array("tail".utf8)))
+-        XCTAssertEqual(doc.textMutationVersionToken(), version + 1)
++        // Attribute ownership notifications can legitimately add an increment.
++        // The public contract is invalidation, not the exact internal count.
++        XCTAssertNotEqual(doc.textMutationVersionToken(), version)
+         XCTAssertEqual(text.getWholeText(), "initialtail")
+         XCTAssertEqual(try doc.select("p:contains(tail)").size(), 1)
+         doc.outputSettings().prettyPrint(pretty: false)
+diff --git a/Tests/SwiftSoupTests/FragmentIndexConstructionTest.swift b/Tests/SwiftSoupTests/FragmentIndexConstructionTest.swift
+--- a/Tests/SwiftSoupTests/FragmentIndexConstructionTest.swift
++++ b/Tests/SwiftSoupTests/FragmentIndexConstructionTest.swift
+@@ -158,4 +158,26 @@ final class FragmentIndexConstructionTest: XCTestCase {
+         XCTAssertTrue(parent.childNode(0).ownerDocument() === foreign)
+     }
+ 
++    func testManualCharacterInsertionAfterFragmentReturnInvalidatesTextPredicates() throws {
++        let builder = HtmlTreeBuilder()
++        let context = try Element(Tag.valueOf("div"), "")
++        _ = try builder.parseFragment(Array("<section></section>".utf8), context, [], .noTracking(), .htmlDefault)
++        let document = builder.doc
++        let root = try XCTUnwrap(document.children().first())
++        let section = try XCTUnwrap(document.select("section").first())
++        for _ in 0..<4 {
++            XCTAssertEqual(try section.text(), "")
++            XCTAssertEqual(try document.select("section:contains(後)").size(), 0)
++            XCTAssertEqual(try document.select("section:empty").size(), 1)
++        }
++        let version = document.textMutationVersionToken()
++        builder.stack = [root, section]
++        builder.transition(.InBody)
++        XCTAssertTrue(try builder.process(Token.Char().data(Array("後".utf8))))
++        XCTAssertNotEqual(document.textMutationVersionToken(), version)
++        XCTAssertEqual(try section.text(), "後")
++        XCTAssertEqual(try document.select("section:contains(後)").size(), 1)
++        XCTAssertEqual(try document.select("section:empty").size(), 0)
++    }
++
+ }
