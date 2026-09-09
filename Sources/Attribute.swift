@@ -370,9 +370,8 @@ open class Attribute {
         valueBytes = nil
         lowerValueSliceCache = nil
         lowerTrimmedValueSliceCache = nil
-        if var slices = valueSlices {
-            slices.append(slice)
-            valueSlices = slices
+        if valueSlices != nil {
+            valueSlices!.append(slice)
             valueSlicesCount += slice.count
             return
         }

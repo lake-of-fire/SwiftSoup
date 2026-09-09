@@ -165,9 +165,8 @@ open class TextNode: Node {
         guard !slice.isEmpty else { return }
         if let attrs = attributes {
             attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: slice)
-        } else if var slices = _textSlices {
-            slices.append(slice)
-            _textSlices = slices
+        } else if _textSlices != nil {
+            _textSlices!.append(slice)
             _textSlicesCount += slice.count
         } else if let existingSlice = _textSlice {
             _textSlices = [existingSlice, slice]

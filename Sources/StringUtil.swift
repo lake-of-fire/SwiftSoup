@@ -1159,10 +1159,21 @@ open class StringUtil {
             }
             let next = idx &+ scalarByteCount
             if next > count { return }
-            accum.write(contentsOf: basePtr.advanced(by: idx), count: scalarByteCount)
+            // Batch adjacent non-ASCII sequences that need no whitespace rewrite.
+            // Preserve the existing lead-byte stepping and truncated-tail behavior.
+            var runEnd = next
+            while runEnd < count {
+                let lead = basePtr[runEnd]
+                if lead < TokeniserStateVars.asciiUpperLimitByte { break }
+                if lead == utf8NBSPLead && runEnd + 1 < count && basePtr[runEnd + 1] == utf8NBSPTrail { break }
+                let width = lead < utf8Lead3Min ? 2 : (lead < utf8Lead4Min ? 3 : 4)
+                if width > count - runEnd { break }
+                runEnd += width
+            }
+            accum.write(contentsOf: basePtr.advanced(by: idx), count: runEnd - idx)
             lastWasWhite = false
             reachedNonWhite = true
-            idx = next
+            idx = runEnd
         }
     }
 

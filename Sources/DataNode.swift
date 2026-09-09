@@ -149,9 +149,8 @@ open class DataNode: Node {
         guard !slice.isEmpty else { return }
         if let attrs = attributes {
             attrs.appendValueSlice(key: DataNode.DATA_KEY, slice: slice)
-        } else if var slices = rawDataSlices {
-            slices.append(slice)
-            rawDataSlices = slices
+        } else if rawDataSlices != nil {
+            rawDataSlices!.append(slice)
             rawDataSlicesCount += slice.count
         } else if let existingSlice = rawDataSlice {
             rawDataSlices = [existingSlice, slice]
