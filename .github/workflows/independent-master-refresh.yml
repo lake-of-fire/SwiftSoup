@@ -1,0 +1,29 @@
+name: Refresh independent optimization baseline
+on:
+  push:
+    branches: [review/independent-hotspots-20260909]
+    paths: [.github/workflows/independent-master-refresh.yml]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Export newly advanced immutable master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir snapshot
+          git archive 5d593583469c49d3c84449f28251b4cf201042a8 | gzip > snapshot/current-master.tar.gz
+          git ls-tree -r 5d593583469c49d3c84449f28251b4cf201042a8 > snapshot/current-master.tree
+          gh api 'repos/lake-of-fire/SwiftSoup/pulls?state=open&per_page=100' --jq 'map({number,title,head:.head.sha,base:.base.ref})' > snapshot/open-prs.json
+          sha256sum snapshot/* > snapshot/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: independent-current-master
+          path: snapshot/
+          retention-days: 7
