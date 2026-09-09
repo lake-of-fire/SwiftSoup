@@ -220,42 +220,42 @@ open class TextNode: Node {
     }
 
     /**
-     Split this text node at a Swift Character (extended grapheme cluster) offset.
-     The offset may equal the character count, producing an empty tail. When this
-     node is attached, the tail is inserted immediately after it.
-     - parameter offset: number of Characters to retain in this node.
-     - returns: the new text node containing the remainder.
+     Split this text node at an extended grapheme cluster (Swift `Character`) offset.
+     The original node keeps the prefix; the returned node contains the suffix and
+     is inserted immediately after it when attached. An offset equal to the number
+     of characters is valid and creates an empty suffix.
+     - parameter offset: character offset, from zero through the character count
+     - returns: the newly created text node
+     - throws: if the offset is outside those bounds, without changing the tree
      */
     open func splitText(_ offset: Int) throws -> TextNode {
         try Validate.isTrue(val: offset >= 0, msg: "Split offset must not be negative")
-        let whole = getWholeText()
-        guard let split = whole.index(whole.startIndex, offsetBy: offset, limitedBy: whole.endIndex) else {
+        // Take one snapshot: subclasses may override the public getter.
+        let current = getWholeText()
+        guard let split = current.index(current.startIndex, offsetBy: offset, limitedBy: current.endIndex) else {
             throw Exception.Error(type: ExceptionType.IllegalArgumentException,
                                   Message: "Split offset must not exceed the character count")
         }
-        return try splitText(head: String(whole[..<split]), tail: String(whole[split...]))
+        return try splitText(head: String(current[..<split]), tail: String(current[split...]))
     }
 
     /**
-     Split at an exact UTF-8 byte offset. The offset must lie on a Unicode scalar
-     boundary, but may lie inside a multi-scalar Character. End offsets are valid.
-     Invalid UTF-8, interior code-unit offsets, and out-of-range offsets throw
-     before changing the text or its parent tree.
+     Split at an exact UTF-8 byte offset on a Unicode scalar boundary. This can
+     separate scalars within a grapheme (such as a letter and its combining mark).
+     Zero and the byte count are valid. Invalid UTF-8 or an offset inside a scalar
+     throws before the node or its parent is modified; bytes are never repaired.
      */
     open func splitText(utf8Offset: Int) throws -> TextNode {
         try Validate.isTrue(val: utf8Offset >= 0, msg: "Split UTF-8 offset must not be negative")
         let current = getWholeTextUTF8()
-        try Validate.isTrue(val: utf8Offset <= current.count, msg: "Split UTF-8 offset must not exceed the byte count")
-        guard let whole = String(bytes: current, encoding: .utf8) else {
+        try Validate.isTrue(val: utf8Offset <= current.count,
+                            msg: "Split UTF-8 offset must not exceed the byte count")
+        guard let head = String(bytes: current[..<utf8Offset], encoding: .utf8),
+              let tail = String(bytes: current[utf8Offset...], encoding: .utf8) else {
             throw Exception.Error(type: ExceptionType.IllegalArgumentException,
-                                  Message: "Cannot split invalid UTF-8 text")
+                                  Message: "Split UTF-8 offset must separate valid Unicode scalar sequences")
         }
-        let bytes = whole.utf8
-        let split = bytes.index(bytes.startIndex, offsetBy: utf8Offset)
-        try Validate.isTrue(val: split.samePosition(in: whole.unicodeScalars) != nil,
-                            msg: "Split UTF-8 offset must be on a Unicode scalar boundary")
-        return try splitText(head: String(decoding: bytes[..<split], as: UTF8.self),
-                             tail: String(decoding: bytes[split...], as: UTF8.self))
+        return try splitText(head: head, tail: tail)
     }
 
     private func splitText(head: String, tail: String) throws -> TextNode {

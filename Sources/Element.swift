@@ -1067,6 +1067,7 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     public func empty() -> Element {
+        guard !childNodes.isEmpty else { return self }
         markQueryIndexesDirty()
         // Retained children remain valid independent subtrees, not phantom
         // members of this element with obsolete sibling positions.
