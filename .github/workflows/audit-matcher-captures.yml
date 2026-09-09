@@ -1,0 +1,33 @@
+name: Matcher capture audit
+on:
+  push:
+    branches: [audit/matcher-captures-20260909]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 5d593583469c49d3c84449f28251b4cf201042a8
+          persist-credentials: false
+      - name: Export immutable baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 5d593583469c49d3c84449f28251b4cf201042a8
+          test "$(git rev-parse HEAD^{tree})" = e06cc2ec7a79a869a6e81f4d8b591cc127288db2
+          mkdir -p "$RUNNER_TEMP/matcher-source"
+          git archive --format=tar HEAD | gzip -n > "$RUNNER_TEMP/matcher-source/SwiftSoup-baseline.tar.gz"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/matcher-source/tree.txt"
+          sha256sum "$RUNNER_TEMP/matcher-source/SwiftSoup-baseline.tar.gz" > "$RUNNER_TEMP/matcher-source/SHA256SUMS"
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matcher-capture-baseline
+          path: ${{ runner.temp }}/matcher-source/
+          if-no-files-found: error
+          retention-days: 14
