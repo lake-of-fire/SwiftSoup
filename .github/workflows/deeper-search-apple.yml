@@ -1,0 +1,64 @@
+name: Deeper search Apple validation and measurement
+on:
+  push:
+    branches: [review/independent-hotspots-20260909]
+    paths: [.github/workflows/deeper-search-apple.yml]
+permissions:
+  contents: read
+jobs:
+  apple:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install statistical tools
+        run: python3 -m pip install numpy scipy
+      - name: Reconstruct immutable source and check exact tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/apple-input /tmp/apple-evidence
+          cp Study/DeeperSearch/* /tmp/apple-input/
+          git worktree add --detach /tmp/search-base ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2
+          git worktree add --detach /tmp/search-new ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2
+          cd /tmp/search-new
+          python3 /tmp/apple-input/prepare.py /tmp/apple-input
+          git add Sources/String.swift Tests/SwiftSoupTests/StringSearchBoundaryTest.swift Tools/benchmark_tokenqueue_search.swift Tools/compare_tokenqueue_search.py
+          test "$(git write-tree)" = 52ac65caf0157434f24f3637370fb84dbbf9dad2
+          git diff --cached --check
+          swift --version | tee /tmp/apple-evidence/toolchain.txt
+          uname -a | tee /tmp/apple-evidence/host.txt
+          git write-tree > /tmp/apple-evidence/tree.txt
+      - name: Complete native release and sanitizer suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/search-new
+          swift test -j 4 -c release 2>&1 | tee /tmp/apple-evidence/release.log
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/apple-evidence/asan.log
+          test "$(git write-tree)" = 52ac65caf0157434f24f3637370fb84dbbf9dad2
+          git diff --exit-code
+      - name: Build full shipping libraries and identical client
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir /tmp/apple-base-lib /tmp/apple-new-lib
+          swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path /tmp/apple-base-lib/SwiftSoup.swiftmodule /tmp/search-base/Sources/*.swift -o /tmp/apple-base-lib/libSwiftSoup.dylib
+          swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path /tmp/apple-new-lib/SwiftSoup.swiftmodule /tmp/search-new/Sources/*.swift -o /tmp/apple-new-lib/libSwiftSoup.dylib
+          swiftc -swift-version 6 -O /tmp/search-new/Tools/benchmark_tokenqueue_search.swift -I /tmp/apple-base-lib -L /tmp/apple-base-lib -lSwiftSoup -o /tmp/apple-search-client
+      - name: Independent Apple comparison and same-binary control
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 /tmp/search-new/Tools/compare_tokenqueue_search.py --client /tmp/apple-search-client --baseline-library /tmp/apple-base-lib --candidate-library /tmp/apple-new-lib --suite search --output /tmp/apple-evidence/ab --blocks 6 --ms 150 --workloads tiny-ascii late-ascii-2048 late-japanese-512 late-japanese-2048 numeric-parse-512 normal-parse-control
+          python3 /tmp/search-new/Tools/compare_tokenqueue_search.py --client /tmp/apple-search-client --baseline-library /tmp/apple-base-lib --candidate-library /tmp/apple-new-lib --suite search --output /tmp/apple-evidence/aa --blocks 6 --ms 150 --aa --workloads tiny-ascii late-ascii-2048 late-japanese-512 late-japanese-2048 numeric-parse-512 normal-parse-control
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deeper-search-apple
+          path: /tmp/apple-evidence/
+          retention-days: 30
