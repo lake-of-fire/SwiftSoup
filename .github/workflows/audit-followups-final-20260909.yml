@@ -1,0 +1,58 @@
+name: Audit final SwiftSoup followups
+on:
+  push:
+    branches: [audit/export-and-verify-20260909]
+    paths: [.github/workflows/audit-followups-final-20260909.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 55afbe3759cd3af802356360c9c82af64180280f
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact published tree and full suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          git show -s --format='%H %T' > "$RUNNER_TEMP/evidence/source.txt"
+          test "$(git rev-parse HEAD^{tree})" = 175028e6012e84a420c87b951fe9948e53d317db
+          swift --version > "$RUNNER_TEMP/evidence/compiler.txt"
+          swift test -j 4 > "$RUNNER_TEMP/evidence/debug.log" 2>&1
+          swift test -j 4 -c release > "$RUNNER_TEMP/evidence/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$RUNNER_TEMP/evidence/asan.log" 2>&1
+          test -z "$(git status --porcelain)"
+      - name: Reproduce original Unicode URL fixture failure on unchanged Apple production
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add "$RUNNER_TEMP/original-master" f30d777c5e09eba3ce0fe81bd7fa74429380f95f
+          git show dd0cc6a6ff8427604163e5bc80d16ce947323f66:Tests/SwiftSoupTests/AbsoluteAttributeRegressionTest.swift > "$RUNNER_TEMP/original-master/Tests/SwiftSoupTests/AbsoluteAttributeRegressionTest.swift"
+          cd "$RUNNER_TEMP/original-master"
+          git show -s --format='%H %T' > "$RUNNER_TEMP/evidence/baseline-source.txt"
+          set +e
+          swift test -j 4 --filter AbsoluteAttributeRegressionTest/testByteCollectionAbsURLOverloadsAgree > "$RUNNER_TEMP/evidence/baseline-original-fixture.log" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -q 'XCTAssertFalse failed' "$RUNNER_TEMP/evidence/baseline-original-fixture.log"
+          grep -q 'Executed 1 test, with 1 failure' "$RUNNER_TEMP/evidence/baseline-original-fixture.log"
+          git diff --exit-code
+          test "$(git status --porcelain)" = '?? Tests/SwiftSoupTests/AbsoluteAttributeRegressionTest.swift'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: final-followups-${{ matrix.os }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 30
+          if-no-files-found: error
