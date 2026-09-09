@@ -2446,22 +2446,29 @@ open class Element: Node {
     }
     
     /**
-     Get the combined data of this element. Data is e.g. the inside of a `script` tag.
+     Get the combined script/style data and comment contents in descendant document order.
+     Ordinary text and declaration nodes are excluded; whitespace is preserved.
      - returns: the data, or empty string if none
      - seealso: ``dataNodes()``
      */
     public func data() -> String {
-        let sb: StringBuilder = StringBuilder()
-        
-        for childNode: Node in childNodes {
-            if let data = (childNode as? DataNode) {
-                sb.append(data.getWholeDataUTF8())
-            } else if let element = (childNode as? Element) {
-                let elementData: String = element.data()
-                sb.append(elementData)
+        let accum = StringBuilder()
+        var pending = Array(childNodes.reversed())
+        while let node = pending.popLast() {
+            if let data = node as? DataNode {
+                if type(of: data) == DataNode.self {
+                    accum.append(data.wholeDataSlice())
+                } else {
+                    // Preserve public getter overrides on custom DataNode subclasses.
+                    accum.append(data.getWholeDataUTF8())
+                }
+            } else if let comment = node as? Comment {
+                accum.append(comment.getDataUTF8())
+            } else if let element = node as? Element {
+                pending.append(contentsOf: element.childNodes.reversed())
             }
         }
-        return sb.toString()
+        return accum.toString()
     }
     
     /**

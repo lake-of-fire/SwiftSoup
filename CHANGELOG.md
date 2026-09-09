@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Include comment contents in `Element.data()` and `:containsData`, as documented, in descendant document order. Traverse iteratively without intermediate subtree strings or materializing single-slice data nodes. Custom DataNode getter overrides remain respected. Queries previously ignoring comment contents may now match.
 * Observe direct `Attribute.setKey` / `setValue` edits through every live owning collection and node, including references shared by `put` / `addAll`. Removed or replaced references no longer invalidate former owners. Reads that materialize deferred text/data do not count as DOM mutations.
 * Clone mutable attribute objects independently, including implicit boolean attributes, while retaining immutable byte storage sharing. Cloned DOM mutations no longer change the original. Attribute keys that are empty after trimming are rejected before mutation.
 * Keep attribute indexes consistent with case-insensitive getters when case variants or direct renames introduce duplicate names: the first matching attribute wins and elements appear once.
