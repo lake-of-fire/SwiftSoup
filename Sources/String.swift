@@ -348,24 +348,22 @@ extension String {
         return self.hasPrefix(string)
     }
     
-	func indexOf(_ substring: String, _ offset: Int ) -> Int {
-        if(offset > count) {return -1}
-
-        let maxIndex = self.count - substring.count
-        if(maxIndex >= 0) {
-            for index in offset...maxIndex {
-                let rangeSubstring = self.index(self.startIndex, offsetBy: index)..<self.index(self.startIndex, offsetBy: index + substring.count)
-                #if swift(>=4)
-                let selfSubstring = self[rangeSubstring]
-                #else
-                let selfSubstring = self.substring(with: rangeSubstring)
-                #endif
-                if selfSubstring == substring {
-                    return index
-                }
-            }
+    func indexOf(_ substring: String, _ offset: Int) -> Int {
+        // Offsets and candidate windows remain Character-based. Advance the
+        // two bounds instead of rescanning from startIndex for every window.
+        guard offset >= 0,
+              var lower = index(startIndex, offsetBy: offset, limitedBy: endIndex),
+              var upper = index(lower, offsetBy: substring.count, limitedBy: endIndex) else {
+            return -1
         }
-        return -1
+        var position = offset
+        while true {
+            if self[lower..<upper] == substring { return position }
+            guard upper < endIndex else { return -1 }
+            formIndex(after: &lower)
+            formIndex(after: &upper)
+            position += 1
+        }
     }
 
     @inline(__always)
