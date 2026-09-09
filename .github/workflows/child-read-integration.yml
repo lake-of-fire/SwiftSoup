@@ -1,0 +1,47 @@
+name: Verify child-read integration without updating source branches
+on:
+  push:
+    branches: [review/child-read-publication-20260909]
+    paths: [.github/workflows/child-read-integration.yml]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify ephemeral integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Study/ChildReads/verify-integration.sh /tmp/verify-child-read-integration.sh
+          export EVIDENCE=/tmp/child-read-integration-evidence
+          bash /tmp/verify-child-read-integration.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: child-read-integration-linux
+          path: /tmp/child-read-integration-evidence/
+          retention-days: 30
+  apple:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify ephemeral integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Study/ChildReads/verify-integration.sh "$RUNNER_TEMP/verify-child-read-integration.sh"
+          export EVIDENCE="$RUNNER_TEMP/child-read-integration-evidence"
+          bash "$RUNNER_TEMP/verify-child-read-integration.sh"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: child-read-integration-apple
+          path: ${{ runner.temp }}/child-read-integration-evidence/
+          retention-days: 30
