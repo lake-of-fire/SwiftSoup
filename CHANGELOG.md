@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Validate TextNode character splits against Swift Character boundaries rather than UTF-8 byte length. UTF-8-labeled splits now honor exact scalar byte boundaries, including within a grapheme, and reject malformed sequences or interior code-unit offsets before mutation. Both overloads accept end offsets and empty text. Character splitting takes one public getter snapshot. These corrections can change results for callers relying on shifted byte offsets or rejected end offsets.
 * Keep negative deferred-attribute lookups lazy after name validation; a missing key no longer instantiates every Attribute. Reject empty case-insensitive value queries before changing storage. Use a bounded, allocation-free name prefilter for small batches, with exact collision checks and the existing set fallback for wide batches.
 * Make deferred attribute lookups and serialization agree with materialized storage. Preserve the existing first-position/last-value rule for exact duplicate names, first matching case-variant lookup, trimmed valid keys, and byte-name precedence. Ordinary unique attribute batches remain deferred; ambiguous batches materialize before reads rather than changing their answers later.
 * Use wrapping integer arithmetic in `Attribute.hashCode()` so hash mixing cannot trap on overflow.
