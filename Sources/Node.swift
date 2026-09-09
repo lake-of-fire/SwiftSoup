@@ -24,7 +24,9 @@ open class Node: Equatable, Hashable {
     @usableFromInline
     var baseUri: [UInt8]?
     @usableFromInline
-    var attributes: Attributes?
+    var attributes: Attributes? {
+        didSet { attributes?.addOwner(self) }
+    }
 
     @inline(__always)
     internal func ensureAttributesForWrite() -> Attributes {
@@ -32,9 +34,6 @@ open class Node: Equatable, Hashable {
             return attributes
         }
         let created = Attributes()
-        if let element = self as? Element {
-            created.ownerElement = element
-        }
         attributes = created
         return created
     }
@@ -119,6 +118,7 @@ open class Node: Equatable, Hashable {
         }
         self.baseUri = baseUri.trim()
         self.attributes = attributes
+        attributes.addOwner(self)
     }
 
     public init(
@@ -132,6 +132,7 @@ open class Node: Equatable, Hashable {
         }
         self.baseUri = baseUri.trim()
         self.attributes = attributes
+        attributes?.addOwner(self)
     }
     
     public init(
@@ -1265,7 +1266,6 @@ open class Node: Equatable, Hashable {
             } else {
                 clone.attributes = attrs.clone()
             }
-            clone.attributes?.ownerElement = clone as? SwiftSoup.Element
         } else {
             clone.attributes = nil
         }

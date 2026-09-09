@@ -25,6 +25,10 @@ open class BooleanAttribute: Attribute {
         try super.init(keySlice: keySlice, valueSlice: ByteSlice.empty)
     }
 
+    internal override init(copying other: Attribute) {
+        super.init(copying: other)
+    }
+
     public convenience init(keySlice: ArraySlice<UInt8>) throws {
         try self.init(key: Array(keySlice))
     }

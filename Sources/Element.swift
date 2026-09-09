@@ -412,13 +412,11 @@ open class Element: Node {
      */
     public convenience init(_ tag: Tag, _ baseUri: String, _ attributes: Attributes, skipChildReserve: Bool = false) {
         self.init(tag, baseUri.utf8Array, attributes, skipChildReserve: skipChildReserve)
-        attributes.ownerElement = self
     }
     
     public init(_ tag: Tag, _ baseUri: [UInt8], _ attributes: Attributes, skipChildReserve: Bool = false) {
         self._tag = tag
         super.init(baseUri, attributes: attributes, skipChildReserve: skipChildReserve)
-        attributes.ownerElement = self
     }
     /**
      Create a new Element from a tag and a base URI.
@@ -431,7 +429,6 @@ open class Element: Node {
      */
     public convenience init(_ tag: Tag, _ baseUri: String, skipChildReserve: Bool = false) {
         self.init(tag, baseUri.utf8Array, skipChildReserve: skipChildReserve)
-        attributes?.ownerElement = self
     }
     
     public init(_ tag: Tag, _ baseUri: [UInt8], skipChildReserve: Bool = false) {
@@ -546,7 +543,6 @@ open class Element: Node {
             return attributes
         }
         let created = Attributes()
-        created.ownerElement = self
         attributes = created
         return created
     }
@@ -3372,12 +3368,7 @@ internal extension Element {
             if needsAttributes || needsHotAttributes {
                 DebugTrace.log("rebuildQueryIndexesCombined: attrs for \(element.tagName())")
                 if let attrs = element.attributes {
-                    attrs.ensureMaterialized()
-                    let lowerKeys = attrs.hasUppercaseKeys
-                    for attr in attrs.attributes {
-                        DebugTrace.log("rebuildQueryIndexesCombined: attr key \(String(decoding: attr.getKeyUTF8(), as: UTF8.self))")
-                        let keySlice = attr.keySlice
-                        let key = lowerKeys ? attr.lowerKeySlice() : keySlice
+                    attrs.forEachEffectiveAttribute { attr, key in
                         if needsAttributes {
                             attributeIndex[key, default: []].append(Weak(element))
                         }
@@ -3589,11 +3580,7 @@ internal extension Element {
         
         traverseElementsDepthFirst { element in
             if let attrs = element.attributes {
-                attrs.ensureMaterialized()
-                let lowerKeys = attrs.hasUppercaseKeys
-                for attr in attrs.attributes {
-                    let keySlice = attr.keySlice
-                    let key = lowerKeys ? attr.lowerKeySlice() : keySlice
+                attrs.forEachEffectiveAttribute { attr, key in
                     newIndex[key, default: []].append(Weak(element))
                 }
             }
@@ -3630,12 +3617,8 @@ internal extension Element {
         newIndex.reserveCapacity(Element.hotAttributeIndexKeys.count + (dynamicKeys?.count ?? 0))
         traverseElementsDepthFirst { element in
             if let attrs = element.getAttributes() {
-                attrs.ensureMaterialized()
-                let lowerKeys = attrs.hasUppercaseKeys
-                for attr in attrs.attributes {
-                    let keySlice = attr.keySlice
-                    let key = lowerKeys ? attr.lowerKeySlice() : keySlice
-                    guard Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false) else { continue }
+                attrs.forEachEffectiveAttribute { attr, key in
+                    guard Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false) else { return }
                     let value = attr.lowerTrimmedValueSlice()
                     newIndex[key, default: [:]][value, default: []].append(Weak(element))
                 }
