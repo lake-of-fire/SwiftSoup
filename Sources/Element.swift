@@ -734,6 +734,20 @@ open class Element: Node {
      */
     @inline(__always)
     open func child(_ index: Int) -> Element {
+        let elementType = type(of: self)
+        if index >= 0,
+           elementType == Element.self || elementType == Document.self || elementType == FormElement.self {
+            // Built-in children() views filter this storage without callbacks.
+            // Stop at the requested element instead of materializing every child.
+            var remaining = index
+            for node in childNodes {
+                if let element = node as? Element {
+                    if remaining == 0 { return element }
+                    remaining -= 1
+                }
+            }
+        }
+        // Preserve custom children()/get() projections and out-of-bounds behavior.
         return children().get(index)
     }
     
