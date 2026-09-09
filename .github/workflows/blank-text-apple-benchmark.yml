@@ -1,0 +1,58 @@
+name: Independently measure blank-text checks on Apple
+on:
+  push:
+    branches: [review/blank-text-apple-20260909]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct immutable matching sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/blank-input /tmp/blank-apple-evidence /tmp/blank-base /tmp/blank-libs/base /tmp/blank-libs/candidate
+          cp .study/* /tmp/blank-input/
+          git checkout --detach 97e071d6d42794ebbca7716a22605176325c6445
+          python3 /tmp/blank-input/prepare.py
+          git add Sources/StringUtil.swift Sources/TextNode.swift Tests/SwiftSoupTests/BlankTextBytesTest.swift Tools/benchmark_blank_text.swift Tools/compare_blank_text.py
+          test "$(git write-tree)" = ba0b1cef7a7d903b51d4362bcccac2a067cf404c
+          git diff --cached --check
+          git archive 97e071d6d42794ebbca7716a22605176325c6445 | tar -x -C /tmp/blank-base
+          git diff --cached --binary > /tmp/blank-apple-evidence/source.patch
+          git ls-files -s > /tmp/blank-apple-evidence/source.tree
+          swift --version | tee /tmp/blank-apple-evidence/toolchain.txt
+          sw_vers | tee /tmp/blank-apple-evidence/host.txt
+          uname -m >> /tmp/blank-apple-evidence/host.txt
+          python3 -m venv /tmp/blank-venv
+          /tmp/blank-venv/bin/pip install numpy scipy
+          /tmp/blank-venv/bin/pip freeze > /tmp/blank-apple-evidence/python-packages.txt
+      - name: Build full shipping libraries and matching public clients
+        shell: bash
+        run: |
+          set -euo pipefail
+          for revision in base candidate; do
+            if [ "$revision" = base ]; then checkout=/tmp/blank-base; else checkout="$GITHUB_WORKSPACE"; fi
+            lib=/tmp/blank-libs/$revision
+            swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path "$lib/SwiftSoup.swiftmodule" "$checkout"/Sources/*.swift -o "$lib/libSwiftSoup.dylib" 2>&1 | tee "/tmp/blank-apple-evidence/build-$revision.log"
+            swiftc -swift-version 6 -O Tools/benchmark_blank_text.swift -I "$lib" -L "$lib" -lSwiftSoup -o "$lib/client"
+          done
+          git diff --exit-code
+          test "$(git write-tree)" = ba0b1cef7a7d903b51d4362bcccac2a067cf404c
+      - name: Balanced fresh-process A/B and true same-binary A/A
+        shell: bash
+        run: |
+          set -euo pipefail
+          /tmp/blank-venv/bin/python Tools/compare_blank_text.py --baseline-client /tmp/blank-libs/base/client --candidate-client /tmp/blank-libs/candidate/client --baseline-library /tmp/blank-libs/base --candidate-library /tmp/blank-libs/candidate --suite blank --output /tmp/blank-apple-evidence/confirm --blocks 8 --ms 200 2>&1 | tee /tmp/blank-apple-evidence/confirm.log
+          /tmp/blank-venv/bin/python Tools/compare_blank_text.py --baseline-client /tmp/blank-libs/base/client --candidate-client /tmp/blank-libs/candidate/client --baseline-library /tmp/blank-libs/base --candidate-library /tmp/blank-libs/candidate --suite blank --output /tmp/blank-apple-evidence/aa --aa --blocks 8 --ms 160 2>&1 | tee /tmp/blank-apple-evidence/aa.log
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blank-text-apple-benchmark
+          path: /tmp/blank-apple-evidence/
+          retention-days: 30
