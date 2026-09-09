@@ -15,6 +15,8 @@ jobs:
     outputs:
       commit: ${{ steps.publish.outputs.commit }}
     steps:
+      - name: Install publication verifier prerequisite
+        run: apt-get update && apt-get install -y --no-install-recommends python3
       - uses: actions/checkout@v4
         with:
           ref: 272f204ac99a69a5180a703094040ac32cba1d68
