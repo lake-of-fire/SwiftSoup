@@ -35,9 +35,9 @@ jobs:
               assert hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest() == sha
               chunks.append(data)
           compressed = b''.join(chunks)
-          assert hashlib.sha256(compressed).hexdigest() == '8c65318e7813acdd9f13c81ffba46e177c5764a1627e0723a37e03d2d2e42cbd'
+          assert hashlib.sha256(compressed).hexdigest() == '13afb827274fa8e812f5d884541c47d23c1b1cffd45ae4fcd0da1520a5bc0d7c'
           raw = gzip.decompress(compressed)
-          assert hashlib.sha256(raw).hexdigest() == 'e39d2828ad9a7adbd3de483d86b6999e2f321e185b2ffb6c48466d6b0d6f788d'
+          assert hashlib.sha256(raw).hexdigest() == 'ace0e3841f245e082f8b3b727cc4eeb72e9e9aecf695eec1b62ef9d63072aced'
           payload = json.loads(raw)
           assert git('rev-parse', 'HEAD') == payload['base_commit']
           assert git('rev-parse', 'HEAD^{tree}') == payload['base_tree']
