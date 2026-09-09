@@ -32,6 +32,8 @@ jobs:
           def once(text, old, new):
               assert text.count(old) == 1, old
               return text.replace(old, new, 1)
+          p = Path('Sources/AttributeMutationTracking.swift')
+          p.write_text(once(p.read_text(), '            return !existing.attributes.contains { $0 === self }', '            // The caller is registering an attribute already in this owner. Avoid\n            // rescanning its array for every item returned by asList / iteration.\n            return existing !== owner && !existing.attributes.contains { $0 === self }'))
           p = Path('Sources/TextNode.swift')
           p.write_text(once(p.read_text(), '    open override func hasAttr(_ attributeKey: String) -> Bool {', '    open override func hasAttr(_ attributeKey: [UInt8]) -> Bool {\n        ensureAttributes()\n        return super.hasAttr(attributeKey)\n    }\n\n    open override func hasAttr(_ attributeKey: String) -> Bool {'))
           original = subprocess.check_output(['git', 'show', '20a0cd78157cc958f52656295fd54dcf08f043ab:Tests/SwiftSoupTests/DeferredAttributeConsistencyTest.swift'], text=True)
@@ -47,6 +49,7 @@ jobs:
           PY
           git add Sources Tests CHANGELOG.md
           git diff --cached --check
+          git write-tree
           test "$(git write-tree)" = 4d5afc95057abf2749c97a299c3c5d92a7d1d946
       - name: Verify exact reconstructed source
         run: |
