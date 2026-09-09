@@ -1,0 +1,55 @@
+name: Verified review object publication
+on:
+  push:
+    branches: [review/verified-source-audit-20260909]
+    paths: [.github/workflows/review-publish-blobs.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c49cb71fd8bfc1897fc00837bfb3b2c48594eaa8
+          persist-credentials: false
+      - name: Verify source and publish immutable objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, gzip, hashlib, json, os, pathlib, subprocess, urllib.request
+          repo = 'lake-of-fire/SwiftSoup'
+          base_tree = '8b54ae5ad19638ccc032570c2ca970fb2152ea68'
+          expected_tree = '2b9b3360aea70169ecda1d0e3f24f6f754d03e53'
+          def git(*args):
+              return subprocess.check_output(['git', *args]).decode().strip()
+          def api(path, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + path, data=data,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          assert git('rev-parse', 'HEAD') == 'c49cb71fd8bfc1897fc00837bfb3b2c48594eaa8'
+          assert git('rev-parse', 'HEAD^{tree}') == base_tree
+          blob = api('/git/blobs/4fefede375c2fc77d7a28862c0d2a7cc8a5ddf3e')
+          patch = gzip.decompress(base64.b64decode(blob['content']))
+          assert hashlib.sha256(patch).hexdigest() == '3a1e9f7e8a17631b63e7bcadd9121ddb329e078c45398a9d8a34a84017846837'
+          pathlib.Path('/tmp/review-presence.patch').write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', '/tmp/review-presence.patch'], check=True)
+          subprocess.run(['git', 'apply', '/tmp/review-presence.patch'], check=True)
+          subprocess.run(['git', 'add', '-A'], check=True)
+          assert git('write-tree') == expected_tree
+          paths = git('diff', '--cached', '--name-only').splitlines()
+          assert len(paths) == 5, paths
+          entries = []
+          for path in paths:
+              data = pathlib.Path(path).read_bytes()
+              sha = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+              actual = api('/git/blobs', {'content': base64.b64encode(data).decode(), 'encoding': 'base64'})['sha']
+              assert sha == actual, path
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': actual})
+          tree = api('/git/trees', {'base_tree': base_tree, 'tree': entries})['sha']
+          assert tree == expected_tree, tree
+          print('VERIFIED_TREE=' + tree)
+          print(json.dumps(entries, sort_keys=True))
