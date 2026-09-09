@@ -1,0 +1,31 @@
+name: Pinned review source snapshot
+on:
+  push:
+    branches: [review/verified-source-audit-20260909]
+    paths: [.github/workflows/review-source-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c49cb71fd8bfc1897fc00837bfb3b2c48594eaa8
+          persist-credentials: false
+      - name: Verify and archive exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = c49cb71fd8bfc1897fc00837bfb3b2c48594eaa8
+          test "$(git rev-parse HEAD^{tree})" = 8b54ae5ad19638ccc032570c2ca970fb2152ea68
+          mkdir -p /tmp/swiftsoup-source-snapshot
+          git archive --format=tar --prefix=SwiftSoup/ HEAD > /tmp/swiftsoup-source-snapshot/source.tar
+          git ls-tree -rz HEAD > /tmp/swiftsoup-source-snapshot/tree-records.bin
+          git show -s --format=raw HEAD > /tmp/swiftsoup-source-snapshot/commit.txt
+          sha256sum /tmp/swiftsoup-source-snapshot/source.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swiftsoup-pinned-pr14-source
+          path: /tmp/swiftsoup-source-snapshot/
+          retention-days: 7
