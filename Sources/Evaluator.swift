@@ -587,19 +587,30 @@ open class Evaluator: @unchecked Sendable {
             if (p == nil || (((p as? Document) != nil))) {return false}
 
             let pos: Int = try calculatePosition(root, element)
-            if (a == 0) {return pos == b}
+            guard pos > 0 else { return false }
+            if a == 0 { return pos == b }
 
-            return (pos-b)*a >= 0 && (pos-b)%a==0
+            // Direction proves n >= 0 without multiplying signed integers.
+            // The unsigned difference represents the full Int-to-Int distance,
+            // even when signed subtraction would overflow. magnitude handles
+            // Int.min without trying to negate it in signed arithmetic.
+            let distance: UInt
+            if a > 0 {
+                guard pos >= b else { return false }
+                distance = UInt(bitPattern: pos) &- UInt(bitPattern: b)
+            } else {
+                guard pos <= b else { return false }
+                distance = UInt(bitPattern: b) &- UInt(bitPattern: pos)
+            }
+            return distance % a.magnitude == 0
         }
 
         open override func toString() -> String {
             if (a == 0) {
                 return ":\(getPseudoClass())(\(b))"
             }
-            if (b == 0) {
-                return ":\(getPseudoClass())(\(a))"
-            }
-            return ":\(getPseudoClass())(\(a)\(b))"
+            let offset = b == 0 ? "" : (b > 0 ? "+\(b)" : "\(b)")
+            return ":\(getPseudoClass())(\(a)n\(offset))"
         }
 
         open func getPseudoClass() -> String {
