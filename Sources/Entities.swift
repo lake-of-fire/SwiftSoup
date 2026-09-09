@@ -550,7 +550,22 @@ public final class Entities: Sendable {
             if end &- i == 2 && base[i] == StringUtil.utf8NBSPLead && base[i &+ 1] == StringUtil.utf8NBSPTrail {
                 accum.append(escapeMode == .xhtml ? xa0EntityUTF8 : nbspEntityUTF8)
             } else {
-                accum.write(contentsOf: base.advanced(by: i), count: end &- i)
+                // Copy adjacent non-ASCII sequences together. Keep the existing
+                // lead-byte stepping, including for malformed/truncated UTF-8.
+                var runEnd = end
+                while runEnd < count {
+                    let next = base[runEnd]
+                    if next < asciiUpperLimitByte { break }
+                    let nextEnd = min(runEnd &+ utf8CharLength(for: next), count)
+                    if nextEnd &- runEnd == 2 && next == StringUtil.utf8NBSPLead
+                        && base[runEnd &+ 1] == StringUtil.utf8NBSPTrail {
+                        break
+                    }
+                    runEnd = nextEnd
+                }
+                accum.write(contentsOf: base.advanced(by: i), count: runEnd &- i)
+                i = runEnd
+                continue
             }
             i = end
         }
