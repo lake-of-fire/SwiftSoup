@@ -137,12 +137,6 @@ open class TextNode: Node {
     @inline(__always)
     open func getWholeTextUTF8() -> [UInt8] {
         if let attrs = attributes {
-            if _textSlice != nil || _textSlices != nil {
-                materializeTextIfNeeded()
-                do {
-                    try attrs.put(TextNode.TEXT_KEY, _text)
-                } catch {}
-            }
             if let slice = attrs.valueSliceCaseSensitive(TextNode.TEXT_KEY) {
                 return slice.toArray()
             }
@@ -168,24 +162,8 @@ open class TextNode: Node {
 
     @usableFromInline
     internal func appendSlice(_ slice: ByteSlice) {
+        guard !slice.isEmpty else { return }
         if let attrs = attributes {
-            if !attrs.hasKey(key: TextNode.TEXT_KEY) {
-                if let slices = _textSlices {
-                    for existing in slices {
-                        attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: existing)
-                    }
-                    _textSlices = nil
-                    _textSlicesCount = 0
-                    _text = []
-                } else if let existingSlice = _textSlice {
-                    attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: existingSlice)
-                    _textSlice = nil
-                    _text = []
-                } else if !_text.isEmpty {
-                    attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: ByteSlice.fromArray(_text))
-                    _text = []
-                }
-            }
             attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: slice)
         } else if var slices = _textSlices {
             slices.append(slice)
@@ -382,16 +360,17 @@ open class TextNode: Node {
     // attribute fiddling. create on first access.
     @inline(__always)
     private func ensureAttributes() {
-        if (attributes == nil) {
-            attributes = Attributes()
-            do {
-                if let slice = _textSlice {
-                    _text = Array(slice)
-                    _textSlice = nil
-                }
-                try attributes?.put(TextNode.TEXT_KEY, _text)
-            } catch {}
-        }
+        guard attributes == nil else { return }
+        materializeTextIfNeeded()
+        let created = Attributes()
+        // Populate before attaching the owner: materialization is not a DOM edit.
+        try? created.put(TextNode.TEXT_KEY, _text)
+        attributes = created
+    }
+
+    internal override func ensureAttributesForWrite() -> Attributes {
+        ensureAttributes()
+        return attributes!
     }
 
     open override func attr(_ attributeKey: [UInt8]) throws -> [UInt8] {

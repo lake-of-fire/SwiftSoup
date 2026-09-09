@@ -61,13 +61,15 @@ open class Attributes: NSCopying {
     var attributes: [Attribute] = [] {
         @inline(__always)
         didSet {
-            ownerElement?.markAttributeQueryIndexesDirty()
-            ownerElement?.markSourceDirty()
+            if !isMaterializing { notifyMutationOwners() }
             invalidateLowercasedKeysCache()
             invalidateKeyIndex()
         }
     }
     
+    // Representation-only materialization must not invalidate DOM caches or source reuse.
+    private var isMaterializing = false
+
     /// Set of lower‑cased UTF‑8 keys for fast O(1) ignore‑case look‑ups
     @usableFromInline
     internal var lowercasedKeysCache: Set<ByteSlice>? = nil
@@ -93,9 +95,13 @@ open class Attributes: NSCopying {
     @usableFromInline
     internal var pendingAttributesCount: Int = 0
     
-    // TODO: Delegate would be cleaner...
     @usableFromInline
-    weak var ownerElement: SwiftSoup.Element?
+    internal weak var ownerNode: Node?
+    internal var additionalOwnerNodes: [Weak<Node>]? = nil
+
+    // Retain the existing single-owner fast path for targeted internal invalidation.
+    @usableFromInline
+    var ownerElement: SwiftSoup.Element? { ownerNode as? SwiftSoup.Element }
     
     public init() {
         attributes.reserveCapacity(16)
@@ -169,8 +175,7 @@ open class Attributes: NSCopying {
         }
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
-        ownerElement?.markAttributeQueryIndexesDirty()
-        ownerElement?.markSourceDirty()
+        notifyMutationOwners()
     }
 
     @usableFromInline
@@ -188,7 +193,9 @@ open class Attributes: NSCopying {
                 localIndex = [:]
                 localIndex?.reserveCapacity(attributes.count + pending.count)
                 for (idx, attr) in attributes.enumerated() {
-                    localIndex?[attr.keySlice] = idx
+                    if localIndex?[attr.keySlice] == nil {
+                        localIndex?[attr.keySlice] = idx
+                    }
                 }
             }
         }
@@ -231,7 +238,11 @@ open class Attributes: NSCopying {
                 materialized.append(attribute)
             }
         }
+        // Initial deferred storage is already the logical contents. A merge into
+        // existing attributes may replace values and must still invalidate owners.
+        isMaterializing = attributes.isEmpty
         attributes = materialized
+        isMaterializing = false
         if let localIndex {
             keyIndex = localIndex
             keyIndexDirty = false
@@ -329,7 +340,9 @@ open class Attributes: NSCopying {
             var rebuilt: [ByteSlice: Int] = [:]
             rebuilt.reserveCapacity(attributes.count)
             for (index, attr) in attributes.enumerated() {
-                rebuilt[attr.keySlice] = index
+                if rebuilt[attr.keySlice] == nil {
+                    rebuilt[attr.keySlice] = index
+                }
             }
             keyIndex = rebuilt
             keyIndexDirty = false
@@ -515,6 +528,7 @@ open class Attributes: NSCopying {
     open func put(attribute: Attribute) {
         ensureMaterialized()
         putMaterialized(attribute)
+        attribute.observeMutations(in: self)
     }
     
     /**
@@ -660,6 +674,7 @@ open class Attributes: NSCopying {
         let originalCount = attributes.count
         for readIndex in 0..<originalCount {
             let attr = attributes[readIndex]
+            attr.observeMutations(in: self)
             let decision = body(attr)
             if let newValue = decision.newValue {
                 _ = attr.setValue(value: newValue)
@@ -710,6 +725,7 @@ open class Attributes: NSCopying {
         ensureMaterialized()
         guard !key.isEmpty else { return }
         if let ix = indexForKey(key) {
+            attributes[ix].observeMutations(in: self)
             attributes[ix].appendValueSlice(slice)
             let normalizedKey = key.lowercased()
             if normalizedKey == UTF8Arrays.class_ {
@@ -1070,18 +1086,20 @@ open class Attributes: NSCopying {
         guard let incoming = incoming else { return }
         incoming.ensureMaterialized()
         for attr in incoming.attributes {
+            attr.observeMutations(in: incoming)
             put(attribute: attr)
         }
     }
     
     /**
-     Get the attributes as a List, for iteration. Do not modify the keys of the attributes via this view, as changes
-     to keys will not be recognised in the containing set.
-     - returns: an view of the attributes as a List.
+     Get a snapshot of the attribute list containing live, mutable attribute references.
+     Key and value changes update the containing collections; editing the returned array does not.
+     - returns: a snapshot of the attribute references in insertion order.
      */
     @inline(__always)
     open func asList() -> [Attribute] {
         ensureMaterialized()
+        observeAttributeMutations()
         return attributes
     }
     
@@ -1247,25 +1265,22 @@ open class Attributes: NSCopying {
     open func lowercaseAllKeys() {
         ensureMaterialized()
         guard hasUppercaseKeys else { return }
-        for ix in attributes.indices {
-            let lowered = attributes[ix].lowerKeySlice()
-            attributes[ix].keySlice = lowered
-            attributes[ix].keyBytes = nil
-            attributes[ix].lowerKeySliceCache = lowered
+        for attribute in attributes {
+            // Notify shared owners, preserving normalization's storage-only behavior.
+            attribute.setNormalizedKey(attribute.lowerKeySlice())
         }
         hasUppercaseKeys = false
         invalidateLowercasedKeysCache()
         invalidateKeyIndex()
-        ownerElement?.markAttributeQueryIndexesDirty()
-        ownerElement?.markSourceDirty()
+        notifyMutationOwners()
     }
     
     @inline(__always)
     public func copy(with zone: NSZone? = nil) -> Any {
         ensureMaterialized()
         let clone = Attributes()
-        clone.attributes = attributes
-        clone.hasUppercaseKeys = hasUppercaseKeys
+        clone.attributes = attributes.map { $0.clone() }
+        clone.hasUppercaseKeys = clone.attributes.contains { Self.containsAsciiUppercase($0.keySlice) }
         clone.lowercasedKeysCache = nil
         clone.lowercasedKeyIndex = nil
         clone.lowercasedKeyIndexDirty = true
@@ -1308,6 +1323,7 @@ open class Attributes: NSCopying {
 extension Attributes: Sequence {
     public func makeIterator() -> AnyIterator<Attribute> {
         ensureMaterialized()
+        observeAttributeMutations()
         return AnyIterator(attributes.makeIterator())
     }
 }
