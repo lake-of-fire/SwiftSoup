@@ -864,6 +864,7 @@ open class Node: Equatable, Hashable {
     
     @inline(__always)
     public func addChildren(_ children: [Node]) throws {
+        guard !children.isEmpty else { return }
         // Validate the whole batch before detaching any input from its current tree.
         for child in children { try validateChildInsertion(child) }
         for child in children {
@@ -884,6 +885,7 @@ open class Node: Equatable, Hashable {
     @inline(__always)
     public func addChildren(_ index: Int, _ children: [Node]) throws {
         try Validate.isTrue(val: index >= 0 && index <= childNodes.count, msg: "Insert position out of bounds.")
+        guard !children.isEmpty else { return }
         for input in children { try validateChildInsertion(input) }
         var insertionIndex = index
         for input in children.reversed() {

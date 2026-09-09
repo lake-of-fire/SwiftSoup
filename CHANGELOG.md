@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Empty child-list insertions and clearing an already empty Element no longer invalidate source/query/text caches or advance mutation tokens. Indexed insertions still validate bounds before returning. Empty TextNode insertion is still a real structural mutation.
 * Make virtual `abs:` attribute presence case-insensitive, matching value lookup. Invalid virtual suffixes fall back to physical attribute presence. Fresh TextNode byte-based presence checks now initialize the same deferred storage as String checks, without marking content edited. These correct previously false results; URL resolution and text-splitting rules remain unchanged.
 * Define `TextNode.splitText(_:)` offsets as Swift Characters and `splitText(utf8Offset:)` offsets as exact Unicode scalar-aligned UTF-8 byte positions. End offsets produce empty tails. Invalid ranges, partial UTF-8 scalars, and malformed byte storage throw before mutation; byte splits no longer silently round to a grapheme boundary.
 * Keep text-dependent selector caches current after child appends, detach retained children during `empty()` / content replacement, and preserve original insertion gaps when moving existing siblings. Self replacement is a no-op; invalid offsets and cyclic insertions/replacements are rejected before detaching any inputs.
