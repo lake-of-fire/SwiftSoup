@@ -1,0 +1,40 @@
+name: Isolated Apple DOM performance study
+
+# This experiment runs only on its dedicated branch, not normal PRs or master.
+on:
+  push:
+    branches: [perf/apple-dom-study-20260908]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-dom-study-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record machine and toolchain
+        run: |
+          uname -a
+          sw_vers
+          swiftc --version
+          sysctl -n machdep.cpu.brand_string
+      - name: Build pinned release variants and run balanced comparisons
+        env:
+          STUDY_OUTPUT: ${{ runner.temp }}/dom-study
+        run: python3 Tools/DOMStudy/run.py
+      - name: Retain complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-dom-study-${{ github.sha }}
+          path: ${{ runner.temp }}/dom-study
+          retention-days: 14
