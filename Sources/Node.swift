@@ -295,7 +295,7 @@ open class Node: Equatable, Hashable {
         guard let attributes = attributes else {
             return false
         }
-        if attributeKey.starts(with: Node.abs) {
+        if Node.hasAbsPrefix(attributeKey) {
             let key = ArraySlice(attributeKey.dropFirst(Node.absCount))
             do {
                 let abs = try absUrl(key)
@@ -303,7 +303,8 @@ open class Node: Equatable, Hashable {
                     return true
                 }
             } catch {
-                return false
+                // Invalid virtual suffixes must not hide a physical attribute
+                // with the complete name (for example a literal "abs:").
             }
             
         }
@@ -863,6 +864,7 @@ open class Node: Equatable, Hashable {
     
     @inline(__always)
     public func addChildren(_ children: [Node]) throws {
+        guard !children.isEmpty else { return }
         // Validate the whole batch before detaching any input from its current tree.
         for child in children { try validateChildInsertion(child) }
         for child in children {
@@ -883,6 +885,7 @@ open class Node: Equatable, Hashable {
     @inline(__always)
     public func addChildren(_ index: Int, _ children: [Node]) throws {
         try Validate.isTrue(val: index >= 0 && index <= childNodes.count, msg: "Insert position out of bounds.")
+        guard !children.isEmpty else { return }
         for input in children { try validateChildInsertion(input) }
         var insertionIndex = index
         for input in children.reversed() {

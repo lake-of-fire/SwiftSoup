@@ -424,9 +424,11 @@ open class Attributes: NSCopying {
     @inline(__always)
     open func get(key: [UInt8]) -> [UInt8] {
         DebugTrace.log("Attributes.get(key): \(String(decoding: key, as: UTF8.self))")
-        if attributes.isEmpty, let pendingValue = pendingValueCaseSensitive(key) {
-            DebugTrace.log("Attributes.get: pending value hit")
-            return pendingValue
+        if attributes.isEmpty {
+            if let value = pendingValueCaseSensitive(key) { return value }
+            // Validation may have materialized an ambiguous batch. Otherwise a
+            // miss is conclusive and must not instantiate every Attribute.
+            if attributes.isEmpty { return [] }
         }
         ensureMaterialized()
         if let ix = indexForKey(key) {
@@ -450,11 +452,12 @@ open class Attributes: NSCopying {
     
     @inline(__always)
     open func getIgnoreCase(key: [UInt8]) throws -> [UInt8] {
-        if attributes.isEmpty, let pendingValue = pendingValueIgnoreCase(key) {
-            return pendingValue
+        try Validate.notEmpty(string: key)
+        if attributes.isEmpty {
+            if let value = pendingValueIgnoreCase(key) { return value }
+            if attributes.isEmpty { return [] }
         }
         ensureMaterialized()
-        try Validate.notEmpty(string: key)
         let keySlice = ByteSlice.fromArray(key)
         let hasUppercase = Attributes.containsAsciiUppercase(key)
         if !Self.disableLowercasedKeyIndex, shouldBuildKeyIndex() {
@@ -487,6 +490,7 @@ open class Attributes: NSCopying {
     @inline(__always)
     @usableFromInline
     internal func getIgnoreCaseSlice(key: [UInt8]) throws -> ByteSlice {
+        try Validate.notEmpty(string: key)
         if attributes.isEmpty {
             if let pendingSlice = pendingValueIgnoreCaseSlice(key) {
                 return pendingSlice
@@ -494,9 +498,9 @@ open class Attributes: NSCopying {
             if let pendingValue = pendingValueIgnoreCase(key) {
                 return ByteSlice.fromArray(pendingValue)
             }
+            if attributes.isEmpty { return ByteSlice.empty }
         }
         ensureMaterialized()
-        try Validate.notEmpty(string: key)
         let keySlice = ByteSlice.fromArray(key)
         let hasUppercase = Attributes.containsAsciiUppercase(key)
         if !Self.disableLowercasedKeyIndex, shouldBuildKeyIndex() {
@@ -802,8 +806,9 @@ open class Attributes: NSCopying {
     
     @inline(__always)
     open func hasKey(key: [UInt8]) -> Bool {
-        if attributes.isEmpty, pendingHasKeyCaseSensitive(key) {
-            return true
+        if attributes.isEmpty {
+            if pendingHasKeyCaseSensitive(key) { return true }
+            if attributes.isEmpty { return false }
         }
         ensureMaterialized()
         return indexForKey(key) != nil
@@ -824,8 +829,9 @@ open class Attributes: NSCopying {
 
     @inline(__always)
     open func hasKeyIgnoreCase(key: [UInt8]) -> Bool {
-        if attributes.isEmpty, pendingHasKeyIgnoreCase(key) {
-            return true
+        if attributes.isEmpty {
+            if pendingHasKeyIgnoreCase(key) { return true }
+            if attributes.isEmpty { return false }
         }
         ensureMaterialized()
         guard !key.isEmpty else { return false }
@@ -854,8 +860,9 @@ open class Attributes: NSCopying {
     
     @inlinable
     open func hasKeyIgnoreCase<T: Collection>(key: T) -> Bool where T.Element == UInt8 {
-        if attributes.isEmpty, pendingHasKeyIgnoreCase(key) {
-            return true
+        if attributes.isEmpty {
+            if pendingHasKeyIgnoreCase(key) { return true }
+            if attributes.isEmpty { return false }
         }
         ensureMaterialized()
         guard !key.isEmpty else { return false }
