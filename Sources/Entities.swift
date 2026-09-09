@@ -71,12 +71,7 @@ public final class Entities: Sendable {
 
     @inline(__always)
     private static func multipointsForName(_ name: ByteSlice) -> [UnicodeScalar]? {
-        for (key, value) in EscapeMode.staticData.multipoints {
-            if compareName(key, name) == 0 {
-                return value
-            }
-        }
-        return nil
+        return EscapeMode.staticData.multipoints[name.toArraySlice()]
     }
     private static let escapeTableAttrHtml: [UInt8] = {
         var table = [UInt8](repeating: 0, count: 256)
