@@ -1,0 +1,27 @@
+name: Export pinned deeper-study source
+on:
+  push:
+    branches: [review/independent-hotspots-20260909]
+    paths: [.github/workflows/deeper-current-source.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Bundle exact merged source
+        run: |
+          set -eu
+          git branch deeper-source-export ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2
+          mkdir -p /tmp/deeper-source
+          git bundle create /tmp/deeper-source/source.bundle deeper-source-export
+          git ls-tree -r ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2 > /tmp/deeper-source/source.tree
+          sha256sum /tmp/deeper-source/source.bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deeper-source
+          path: /tmp/deeper-source/
+          retention-days: 7
