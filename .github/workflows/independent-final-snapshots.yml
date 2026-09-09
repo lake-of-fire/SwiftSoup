@@ -1,0 +1,35 @@
+name: Verify final independent PR snapshots
+on:
+  push:
+    branches: [review/independent-hotspots-20260909]
+    paths: [.github/workflows/independent-final-snapshots.yml]
+permissions:
+  contents: read
+jobs:
+  snapshots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Export immutable final PR trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir final
+          for pair in position:bb0f67db10f5edc1c53e825dbecbc6430dfa5096 css:a608c67913404144c0d46f218def807ef386d1da; do
+            name=${pair%%:*}
+            sha=${pair#*:}
+            git archive "$sha" | gzip > "final/$name.tar.gz"
+            git ls-tree -r "$sha" > "final/$name.tree"
+            git diff 5d593583469c49d3c84449f28251b4cf201042a8 "$sha" > "final/$name.patch"
+            git diff --name-status 5d593583469c49d3c84449f28251b4cf201042a8 "$sha" > "final/$name.changed-files"
+            git rev-parse "$sha" "$sha^{tree}" "$sha:Sources" "$sha:Tests/SwiftSoupTests" > "final/$name.identities"
+          done
+          git rev-parse origin/master > final/observed-master.txt
+          sha256sum final/* > final/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: independent-final-snapshots
+          path: final/
+          retention-days: 14
