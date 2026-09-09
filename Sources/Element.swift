@@ -1255,7 +1255,25 @@ open class Element: Node {
      */
     public func elementSiblingIndex()throws->Int {
         if (parent() == nil) {return 0}
-        let x = try Element.indexInList(self, parent()?.children().array())
+        let parent = parent()
+        if let parent {
+            let parentType = type(of: parent)
+            if parentType == Element.self || parentType == Document.self || parentType == FormElement.self {
+                // Built-in parents expose childNodes in order. Count elements without
+                // allocating the complete filtered list or trusting siblingIndex.
+                var index = 0
+                for node in parent.childNodes {
+                    if let element = node as? Element {
+                        if element === self { return index }
+                        index += 1
+                    }
+                }
+                return 0
+            }
+        }
+        // Preserve custom parent()/children()/array() views, including a nil
+        // second parent() result and its original validation error.
+        let x = try Element.indexInList(self, parent?.children().array())
         return x == nil ? 0 : x!
     }
     
