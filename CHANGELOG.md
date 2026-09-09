@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Use wrapping integer arithmetic in `Attribute.hashCode()` so valid attribute keys cannot trigger an arithmetic-overflow trap during hash mixing. Equal attributes still receive equal process-local hashes.
+* Avoid rescanning the registering owner's attribute array when re-observing a known member. Repeated snapshots/iteration of exclusively owned attributes no longer perform a quadratic identity-membership scan. Mutation notifications still validate every owner by identity and prune removed or expired owners.
 * Make deferred attribute getters, presence checks, regenerated HTML, and selector indexes agree with materialized storage: trim/drop invalid keys and preserve the first position with the last value for exact duplicate keys. Distinct case variants retain their existing order. This corrects read-order-dependent results without changing the fork's materialized duplicate-key policy or eagerly creating Attribute objects.
 * Initialize deferred TextNode attributes for byte-array `hasAttr` checks, just as for String checks. Reads do not dirty the source or restore removed text.
 * Include comment contents in `Element.data()` and `:containsData`, as documented, in descendant document order. Traverse iteratively without intermediate subtree strings or materializing single-slice data nodes. Custom DataNode getter overrides remain respected. Queries previously ignoring comment contents may now match.
