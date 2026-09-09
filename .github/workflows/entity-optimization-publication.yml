@@ -1,0 +1,78 @@
+name: Publish verified entity optimizations
+on:
+  push:
+    branches: [review/entity-optimization-publication-20260909]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [escape, lookup]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cb57c9e160da093c7dd87eb91d335b6891d0efb7
+          fetch-depth: 1
+      - name: Apply exact independently tested files
+        env:
+          VARIANT: ${{ matrix.variant }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          command -v python3 || (apt-get update -qq && apt-get install -y python3)
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          python3 - <<'PYCODE'
+          import base64,hashlib,json,os,pathlib,subprocess,zlib
+          encoded=''.join(subprocess.check_output(['git','show',os.environ['GITHUB_SHA']+':.github/entity-publication-payload-20260909/'+str(i)+'.b64'],text=True).strip() for i in range(4))
+          raw=zlib.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(raw).hexdigest()=='4f03a4ff8473f6a174d02267c4c47312ef3d355aae960016f7531337193f64a8'
+          variant=os.environ['VARIANT']; item=json.loads(raw)[variant]
+          def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
+          assert git('rev-parse','HEAD')=='cb57c9e160da093c7dd87eb91d335b6891d0efb7'
+          assert git('hash-object','Sources/Entities.swift')=='9a8e292e58323cedb86e834cc24c8bf14af89739'
+          remote=subprocess.run(['git','ls-remote','--exit-code','--heads','origin',item['branch']],capture_output=True,text=True)
+          assert remote.returncode==2, ('Target must be absent; no existing ref is changed',remote.stdout,remote.stderr)
+          subprocess.run(['git','apply','--check','-'],input=item['patch'],text=True,check=True)
+          subprocess.run(['git','apply','-'],input=item['patch'],text=True,check=True)
+          for name,content in item['files'].items():
+              p=pathlib.Path(name)
+              assert not p.is_absolute() and '..' not in p.parts and not p.exists(),name
+              p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(content.encode())
+          for name,expected in item['blobs'].items():assert git('hash-object',name)==expected,(name,expected)
+          subprocess.run(['git','add','--',*sorted(item['blobs'])],check=True)
+          assert set(git('diff','--cached','--name-only').splitlines())==set(item['blobs'])
+          subprocess.run(['git','diff','--cached','--check'],check=True)
+          pathlib.Path('/tmp/entity-publication.json').write_text(json.dumps(item))
+          print(json.dumps({'variant':variant,'expected_blobs':item['blobs']},indent=2))
+          PYCODE
+      - name: Native release suite on exact master-based candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift --version
+          swift test -c release -j 2
+      - name: Commit and publish only a new feature branch
+        env:
+          VARIANT: ${{ matrix.variant }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python3 - <<'PYCODE'
+          import json,os,pathlib,subprocess
+          item=json.loads(pathlib.Path('/tmp/entity-publication.json').read_text())
+          def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
+          for name,expected in item['blobs'].items():assert git('hash-object',name)==expected,name
+          assert set(git('diff','--cached','--name-only').splitlines())==set(item['blobs'])
+          title='perf: batch pass-through Unicode entity escaping' if os.environ['VARIANT']=='escape' else 'perf: use existing dictionary for multipoint entity lookup'
+          subprocess.run(['git','commit','-m',title],check=True)
+          assert git('rev-parse','HEAD^')=='cb57c9e160da093c7dd87eb91d335b6891d0efb7'
+          subprocess.run(['git','push','origin','HEAD:refs/heads/'+item['branch']],check=True)
+          print('PUBLISHED '+json.dumps({'variant':os.environ['VARIANT'],'branch':item['branch'],'head':git('rev-parse','HEAD'),'tree':git('rev-parse','HEAD^{tree}'),'blobs':item['blobs']},sort_keys=True))
+          PYCODE
