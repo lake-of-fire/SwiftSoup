@@ -1,0 +1,80 @@
+name: Isolated parser scratch-storage A/B
+on:
+  push:
+    branches: [bench/parser-scratch-storage-20260909]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build, validate, and measure the exact six-line candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE"
+          BENCH="$ROOT/Benchmarks/ParserScratch"
+          OUT="$ROOT/scratch-results"
+          mkdir -p "$OUT/base" "$OUT/candidate"
+          { uname -a; sw_vers; xcodebuild -version; swift --version; sysctl -n machdep.cpu.brand_string || true; } > "$OUT/environment.txt"
+          git rev-parse HEAD > "$OUT/benchmark-commit.txt"
+          BASE=c9c37c80eb571aabba59a1f3ef31af9b072af4a8
+          git worktree add --detach "$RUNNER_TEMP/soup-base" "$BASE"
+          git worktree add --detach "$RUNNER_TEMP/soup-candidate" "$BASE"
+          git -C "$RUNNER_TEMP/soup-candidate" apply --check "$BENCH/storage.patch"
+          git -C "$RUNNER_TEMP/soup-candidate" apply "$BENCH/storage.patch"
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import hashlib, pathlib, sys
+          root=pathlib.Path(sys.argv[1])
+          expected={
+            'base': ['f3e5cf044ca6c9535dbe7d061504728d2bb36e13f151fce92b693edc06873029','d7de9a444461dc92090c60d1bde7d65c3eaa4668b852e95a704a30a478ee9ee9'],
+            'candidate': ['73db128d162c83b5d8a6eebbbdf586d83986717a05449a2cc7867e2119d73928','d8f82f2f83401d255f4b0cc8806ab1e591f7d983a3a1a308e41e162539127691']}
+          for variant, hashes in expected.items():
+            for filename, digest in zip(['Token.swift','Tokeniser.swift'],hashes):
+              actual=hashlib.sha256((root/f'soup-{variant}'/'Sources'/filename).read_bytes()).hexdigest()
+              assert actual==digest,(variant,filename,actual)
+          PY
+          cp "$BENCH/TokenScratchBufferTest.swift" "$RUNNER_TEMP/soup-candidate/Tests/SwiftSoupTests/"
+          swift test --package-path "$RUNNER_TEMP/soup-candidate" -c release -j 3 > "$OUT/candidate-tests.log" 2>&1
+          for variant in base candidate; do
+            git -C "$RUNNER_TEMP/soup-$variant" diff > "$OUT/$variant/source.diff"
+            shasum -a 256 "$RUNNER_TEMP/soup-$variant"/Sources/*.swift > "$OUT/$variant/sources.sha256"
+            swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup \
+              "$RUNNER_TEMP/soup-$variant"/Sources/*.swift \
+              -emit-module-path "$OUT/$variant/SwiftSoup.swiftmodule" \
+              -Xlinker -install_name -Xlinker @rpath/libSwiftSoup.dylib \
+              -o "$OUT/$variant/libSwiftSoup.dylib" > "$OUT/$variant/build.log" 2>&1
+          done
+          swiftc -O -g -I "$OUT/base" -L "$OUT/base" -lSwiftSoup \
+            -Xlinker -rpath -Xlinker "$OUT/base" "$BENCH/main.swift" -o "$OUT/benchmark" > "$OUT/client-build.log" 2>&1
+          for variant in base candidate; do
+            DYLD_PRINT_LIBRARIES=1 DYLD_LIBRARY_PATH="$OUT/$variant" "$OUT/benchmark" --workload snippets --observations --output "$OUT/$variant/loader-observations.json" 2> "$OUT/$variant/loaded-libraries.log"
+            grep -F "$OUT/$variant/libSwiftSoup.dylib" "$OUT/$variant/loaded-libraries.log"
+          done
+          python3 "$BENCH/compare.py" --client "$OUT/benchmark" \
+            --base-library "$OUT/base/libSwiftSoup.dylib" --candidate-library "$OUT/candidate/libSwiftSoup.dylib" \
+            --out "$OUT/measurements" --blocks 12 --aa-blocks 8 --target-ms 800
+      - name: Retain raw results and validation logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parser-scratch-macos-evidence
+          path: |
+            scratch-results/environment.txt
+            scratch-results/benchmark-commit.txt
+            scratch-results/*tests.log
+            scratch-results/*build.log
+            scratch-results/base/*.log
+            scratch-results/candidate/*.log
+            scratch-results/base/*.diff
+            scratch-results/candidate/*.diff
+            scratch-results/base/*.sha256
+            scratch-results/candidate/*.sha256
+            scratch-results/measurements/
+          if-no-files-found: error
+          retention-days: 30

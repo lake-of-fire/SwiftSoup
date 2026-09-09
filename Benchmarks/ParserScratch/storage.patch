@@ -1,0 +1,45 @@
+--- a/Sources/Token.swift
++++ b/Sources/Token.swift
+@@ -41,10 +41,10 @@
+     }
+     
+     final class Doctype: Token {
+-        let name: StringBuilder = StringBuilder()
++        let name: StringBuilder = StringBuilder(0)
+         var pubSysKey: [UInt8]?
+-        let publicIdentifier: StringBuilder = StringBuilder()
+-        let systemIdentifier: StringBuilder = StringBuilder()
++        let publicIdentifier: StringBuilder = StringBuilder(0)
++        let systemIdentifier: StringBuilder = StringBuilder(0)
+         var forceQuirks: Bool  = false
+         
+         override init() {
+@@ -352,7 +352,7 @@
+         private var _pendingAttributeNameHasUppercase: Bool = false
+         private var _pendingAttributeName: [UInt8]? // attribute names are generally caught in one hop, not accumulated
+         private var _pendingAttributeNameS: ByteSlice? // fast path to avoid copying name slices
+-        private let _pendingAttributeValue: StringBuilder = StringBuilder() // but values are accumulated, from e.g. & in hrefs
++        private let _pendingAttributeValue: StringBuilder = StringBuilder(0) // but values are accumulated, from e.g. & in hrefs
+         private var _pendingAttributeValueS: ByteSlice? // try to get attr vals in one shot, vs Builder
+         private var _pendingAttributeValueSlices: [ByteSlice]? // multiple slices before materializing
+         private var _pendingAttributeValueSlicesCount: Int = 0
+@@ -1241,7 +1241,7 @@
+     }
+     
+     final class Comment: Token {
+-        let data: StringBuilder = StringBuilder()
++        let data: StringBuilder = StringBuilder(0)
+         var bogus: Bool = false
+         
+         @discardableResult
+--- a/Sources/Tokeniser.swift
++++ b/Sources/Tokeniser.swift
+@@ -164,7 +164,7 @@
+     private var pendingCharRange: SourceRange? = nil
+     private var pendingTagStartPos: Int? = nil
+     private let charsBuilder: StringBuilder = StringBuilder(256) // buffers characters to output as one token, if more than one emit per read
+-    let dataBuffer: StringBuilder = StringBuilder(4 * 1024) // buffers data looking for </script>
++    let dataBuffer: StringBuilder = StringBuilder(0) // buffers data looking for </script>
+     
+     var tagPending: Token.Tag = Token.Tag() // tag we are building up
+     let startPending: Token.StartTag  = Token.StartTag()
