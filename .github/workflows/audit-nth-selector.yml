@@ -1,0 +1,40 @@
+name: Nth selector reassessment
+on:
+  push:
+    branches: [audit/nth-selector-reassessment-20260909]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  source:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f3c7052d8614e0d7a1d6ced70351a8eb68392499
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export exact source and history
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = f3c7052d8614e0d7a1d6ced70351a8eb68392499
+          mkdir -p "$RUNNER_TEMP/nth-review"
+          git archive --format=tar HEAD | gzip -n > "$RUNNER_TEMP/nth-review/SwiftSoup-current.tar.gz"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/nth-review/tree.txt"
+          git log -80 --format='%H %P %s' > "$RUNNER_TEMP/nth-review/history.txt"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/nth-review/identity.txt"
+          gh api --paginate 'repos/lake-of-fire/SwiftSoup/pulls?state=all&per_page=100' --jq '.[] | {number,title,state,draft,merged_at,head:.head.sha,base:.base.ref,updated_at}' > "$RUNNER_TEMP/nth-review/pr-inventory.jsonl"
+          sha256sum "$RUNNER_TEMP/nth-review/SwiftSoup-current.tar.gz" > "$RUNNER_TEMP/nth-review/SHA256SUMS"
+          status=$(git status --porcelain)
+          test -z "$status"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nth-selector-current-source
+          path: ${{ runner.temp }}/nth-review/
+          if-no-files-found: error
+          retention-days: 14
