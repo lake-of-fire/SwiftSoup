@@ -1,0 +1,90 @@
+name: Qualify text blankness without decoding
+on:
+  push:
+    branches: [review/blank-text-qualification-20260909]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.publish.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct exact tested tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          apt-get update -qq && apt-get install -y python3
+          mkdir -p /tmp/blank-input /tmp/blank-evidence
+          cp .study/* /tmp/blank-input/
+          git checkout --detach 97e071d6d42794ebbca7716a22605176325c6445
+          python3 /tmp/blank-input/prepare.py
+          git add Sources/StringUtil.swift Sources/TextNode.swift Tests/SwiftSoupTests/BlankTextBytesTest.swift Tools/benchmark_blank_text.swift Tools/compare_blank_text.py
+          git write-tree | tee /tmp/blank-evidence/tree.txt
+          test "$(git write-tree)" = ba0b1cef7a7d903b51d4362bcccac2a067cf404c
+          git diff --cached --check
+          git diff --cached --binary > /tmp/blank-evidence/source.patch
+          swift --version | tee /tmp/blank-evidence/toolchain.txt
+          git ls-files -s > /tmp/blank-evidence/source.tree
+      - name: Full release and AddressSanitizer suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -j 4 -c release 2>&1 | tee /tmp/blank-evidence/release.log
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/blank-evidence/asan.log
+          git diff --exit-code
+          test "$(git write-tree)" = ba0b1cef7a7d903b51d4362bcccac2a067cf404c
+      - name: Publish source-only branch
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=perf/text-blankness-bytes-20260909
+          if git ls-remote --exit-code --heads origin "$branch"; then exit 1; fi
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          sha=$(git commit-tree ba0b1cef7a7d903b51d4362bcccac2a067cf404c -p 97e071d6d42794ebbca7716a22605176325c6445 -m 'Avoid Unicode decoding and Character iteration for text blankness')
+          git push origin "$sha:refs/heads/$branch"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "$sha" > /tmp/blank-evidence/commit.txt
+          git archive "$sha" | gzip > /tmp/blank-evidence/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blank-text-linux
+          path: /tmp/blank-evidence/
+          retention-days: 30
+  apple:
+    needs: publish
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.sha }}
+      - name: Validate exact published source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ needs.publish.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/blank-evidence
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD^{tree})" = ba0b1cef7a7d903b51d4362bcccac2a067cf404c
+          swift --version | tee /tmp/blank-evidence/toolchain.txt
+          echo "$EXPECTED_SHA" > /tmp/blank-evidence/commit.txt
+          swift test -j 4 -c release 2>&1 | tee /tmp/blank-evidence/release.log
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/blank-evidence/asan.log
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blank-text-apple
+          path: /tmp/blank-evidence/
+          retention-days: 30
