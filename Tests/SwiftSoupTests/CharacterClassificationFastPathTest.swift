@@ -107,4 +107,56 @@ final class CharacterClassificationFastPathTest: XCTestCase {
         try section.prepend("<p id='c'>added</p>")
         XCTAssertEqual(try document.select(query).array().map { $0.id() }, ["c", "b"])
     }
+
+    func testEveryASCIIStarterWithCombiningSuffixesUsesFullCharacter() {
+        let marks = Array(UInt32(0x0300)...UInt32(0x036F)) + [0x200D, 0x20E3, 0xFE0E, 0xFE0F]
+        let memberships: [CharacterSet] = [.letters, .decimalDigits, .nonBaseCharacters,
+                                         CharacterSet(charactersIn: "Aez0\r\n"), CharacterSet().inverted]
+        for value in UInt32(0)..<128 {
+            for mark in marks {
+                let text = String(UnicodeScalar(value)!) + String(UnicodeScalar(mark)!)
+                // Controls may introduce a boundary instead of one grapheme.
+                // Check actual Characters rather than inventing a grouping.
+                for character in text {
+                    for set in memberships {
+                        XCTAssertEqual(character.isMemberOfCharacterSet(set), original(character, set),
+                                       "starter=\(value), mark=\(mark)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testMembershipUsesTheCurrentMutableCharacterSet() {
+        for value in UInt32(0)..<128 {
+            let scalar = UnicodeScalar(value)!
+            let character = Character(scalar)
+            var set = CharacterSet()
+            XCTAssertFalse(character.isMemberOfCharacterSet(set))
+            set.insert(charactersIn: String(scalar))
+            XCTAssertTrue(character.isMemberOfCharacterSet(set))
+            let snapshot = set
+            set.invert()
+            XCTAssertFalse(character.isMemberOfCharacterSet(set))
+            XCTAssertTrue(character.isMemberOfCharacterSet(snapshot))
+            set.insert(charactersIn: "\r\n")
+            XCTAssertFalse(Character("\r\n").isMemberOfCharacterSet(set))
+        }
+    }
+
+    func testBridgedAndSlicedStorageKeepsClassificationAndExactSpelling() {
+        // NUL forces a grapheme boundary even before a leading combining mark.
+        let prefix = String(repeating: "日", count: 1024) + "\0"
+        let suffix = String(repeating: "語", count: 1024)
+        for spelling in ["A", "1", "\0", "\r\n", "e\u{0301}", "\u{0344}", "\u{212A}", "가", "🇯🇵"] {
+            let bridged = NSString(string: prefix + spelling + suffix) as String
+            let begin = bridged.index(bridged.startIndex, offsetBy: 1025)
+            let end = bridged.index(after: begin)
+            let slice = bridged[begin..<end]
+            XCTAssertEqual(Array(slice.utf8), Array(spelling.utf8))
+            check(bridged[begin])
+            check(Character(String(slice)))
+            XCTAssertEqual(Array(bridged.utf8), Array((prefix + spelling + suffix).utf8))
+        }
+    }
 }

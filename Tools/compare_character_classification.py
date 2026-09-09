@@ -6,12 +6,47 @@ public client source separately compiled against each matching library. Never bu
 """
 import argparse, hashlib, json, math, os, platform, random, subprocess, time
 from pathlib import Path
-import numpy as np
-from scipy.stats import t
 
 WORKLOADS = {
     "classification": ["ascii-letters", "ascii-mixed", "unicode-mixed", "start-tags", "word-short", "tag-name", "word-unicode", "selector-parse", "selector-tags", "selector-unicode", "parse-control"]
 }
+
+
+def validate_sample(sample, workload, iterations, expected=None):
+    """Reject inconsistent records before using their timing denominator."""
+    if not isinstance(sample, dict) or set(sample) != {"workload", "iterations", "elapsed_ns", "expected", "checksum"}:
+        raise ValueError("Unexpected sample schema")
+    if sample['workload'] != workload:
+        raise ValueError("Workload mismatch")
+    for key in ('iterations', 'elapsed_ns', 'expected', 'checksum'):
+        if type(sample[key]) is not int:
+            raise ValueError(f"{key} must be an integer")
+    if sample['iterations'] != iterations or iterations <= 0:
+        raise ValueError("Iteration count mismatch")
+    if sample['elapsed_ns'] <= 0:
+        raise ValueError("Elapsed duration must be positive")
+    if expected is not None and sample['expected'] != expected:
+        raise ValueError("Expected value changed")
+    if sample['checksum'] != sample['expected'] * iterations:
+        raise ValueError("Checksum mismatch")
+    return sample
+
+
+def validate_outputs(first, second):
+    if first != second:
+        raise ValueError("Full observable outputs differ; refusing to benchmark")
+    observed = json.loads(first)
+    if not isinstance(observed, list) or not observed or any(not isinstance(x, dict) or not x for x in observed):
+        raise ValueError("Verification output must be a nonempty array of nonempty records")
+    return observed
+
+
+def validate_workloads(names):
+    if not names or len(set(names)) != len(names):
+        raise ValueError("Workloads must be nonempty and unique")
+    if any(w not in WORKLOADS['classification'] for w in names):
+        raise ValueError("Unknown workload")
+    return names
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -28,6 +63,9 @@ def main():
     p.add_argument('--workloads',nargs='+')
     a=p.parse_args()
     if a.blocks < 2 or a.ms < 1: p.error('blocks must be >=2 and ms >=1')
+    import numpy as np
+    from scipy.stats import t
+    names=validate_workloads(a.workloads or WORKLOADS[a.suite])
     a.output.mkdir(parents=True,exist_ok=False)
     clients={'A': a.baseline_client.resolve(), 'B': (a.baseline_client if a.aa else a.candidate_client).resolve()}
     paths={'A':a.baseline_library.resolve(),'B':(a.baseline_library if a.aa else a.candidate_library).resolve()}
@@ -41,16 +79,12 @@ def main():
         return result.stdout
     verify={k:launch(k,['--verify']) for k in paths}
     for k,s in verify.items(): (a.output/f'outputs-{k}.json').write_text(s)
-    if verify['A'] != verify['B']: raise RuntimeError('Full observable outputs differ; refusing to benchmark')
-    observed=json.loads(verify['A'])
-    if not observed: raise RuntimeError('Empty verification output')
+    observed=validate_outputs(verify['A'],verify['B'])
     manifest={'arguments':{k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()},'platform':platform.platform(),
               'client_sha256':{k:hashlib.sha256(v.read_bytes()).hexdigest() for k,v in clients.items()},
               'library_sha256':{k:hashlib.sha256((v/('libSwiftSoup.dylib' if platform.system()=='Darwin' else 'libSwiftSoup.so')).read_bytes()).hexdigest() for k,v in paths.items()},
               'output_sha256':hashlib.sha256(verify['A'].encode()).hexdigest(),'verification_records':len(observed),'created_unix':time.time()}
     (a.output/'manifest.json').write_text(json.dumps(manifest,indent=2))
-    names=a.workloads or WORKLOADS[a.suite]
-    if any(w not in WORKLOADS[a.suite] for w in names): raise ValueError('Unknown workload')
     calibration=[]; iterations={}; expected={}
     for w in names:
         iterations[w]={}
@@ -59,8 +93,10 @@ def main():
             # tiny calls. Retain every calibration attempt separately.
             count = 16
             while True:
-                sample=json.loads(launch(k,[w,str(count)]))
+                sample=validate_sample(json.loads(launch(k,[w,str(count)])),w,count,expected.get(w))
+                expected[w]=sample['expected']
                 calibration.append({'revision':k,**sample})
+                (a.output/'calibration.json').write_text(json.dumps(calibration,indent=2))
                 if sample['elapsed_ns'] >= max(20, a.ms / 3) * 1e6 or count >= 100_000_000:
                     break
                 ratio = max(2, min(8, math.ceil(a.ms * 1e6 / max(1, sample['elapsed_ns']))))
@@ -77,8 +113,7 @@ def main():
             for w in workloads:
                 order='ABBA' if block%2==0 else 'BAAB'
                 for slot,k in enumerate(order):
-                    data=json.loads(launch(k,[w,str(iterations[w][k])]))
-                    if data['expected'] != expected[w] or data['checksum'] != expected[w]*iterations[w][k]: raise RuntimeError('Timed checksum changed')
+                    data=validate_sample(json.loads(launch(k,[w,str(iterations[w][k])])),w,iterations[w][k],expected[w])
                     record={'block':block,'slot':slot,'revision':k,**data}
                     records.append(record); log.write(json.dumps(record)+'\n'); log.flush()
             print(f'{a.suite} {"AA" if a.aa else "AB"}: completed block {block+1}/{a.blocks}',flush=True)
@@ -89,7 +124,7 @@ def main():
             pair={}
             for k in paths:
                 times=[x['elapsed_ns']/x['iterations']/1e6 for x in records if x['workload']==w and x['block']==block and x['revision']==k]
-                assert len(times)==2
+                if len(times)!=2: raise ValueError('Each block needs two observations per revision')
                 pair[k]=float(np.mean(np.log(times)))
             means.append(pair)
         deltas=np.array([x['B']-x['A'] for x in means]); center=float(np.mean(deltas))
