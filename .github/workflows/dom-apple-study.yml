@@ -1,9 +1,8 @@
-name: Isolated Apple DOM performance study
+name: Isolated Apple DOM confirmation
 
-# This experiment runs only on its dedicated branch, not normal PRs or master.
 on:
   push:
-    branches: [perf/apple-dom-study-20260908]
+    branches: [perf/apple-dom-confirm-20260908]
 
 permissions:
   contents: read
@@ -30,11 +29,11 @@ jobs:
       - name: Build pinned release variants and run balanced comparisons
         env:
           STUDY_OUTPUT: ${{ runner.temp }}/dom-study
-        run: python3 Tools/DOMStudy/run.py
+        run: python3 Tools/DOMStudy/confirm.py
       - name: Retain complete evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: apple-dom-study-${{ github.sha }}
+          name: apple-dom-confirm-${{ github.sha }}
           path: ${{ runner.temp }}/dom-study
           retention-days: 14

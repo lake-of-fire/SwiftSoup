@@ -26,7 +26,8 @@ func parse() throws -> Document {
     document.outputSettings().prettyPrint(pretty: false)
     return document
 }
-let prepared = kind == "copy" ? try parse() : nil
+let prepared = ["copy", "publish"].contains(kind) ? try parse() : nil
+let stagingDocument = kind == "publish" ? try SwiftSoup.parseBodyFragment(annotated) : nil
 if let prepared {
     for element in try prepared.select("*") { _ = element.getAttributes()?.asList() }
 }
@@ -36,7 +37,16 @@ func operation() throws -> String {
         let copied = prepared!.copy() as! Document
         return observe ? String(decoding: try copied.outerHtmlUTF8WithoutSourceReuse(), as: UTF8.self) : String(copied.childNodeSize())
     }
-    let document = try parse()
+    let document = kind == "publish" ? prepared! : try parse()
+    if kind == "publish" {
+        let root = document.body()!
+        let children = stagingDocument!.body()!.childNodesCopy()
+        let rollback = root.childNodesCopy()
+        root.empty()
+        try root.insertChildren(0, children)
+        withExtendedLifetime(rollback) {}
+        return String(decoding: try document.outerHtmlUTF8ReusingSourceOutsideBody(), as: UTF8.self)
+    }
     if kind.hasPrefix("parse") {
         return observe ? String(decoding: try document.outerHtmlUTF8WithoutSourceReuse(), as: UTF8.self) : String(document.body()!.childNodeSize())
     }
