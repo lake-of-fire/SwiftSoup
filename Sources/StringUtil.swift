@@ -354,13 +354,18 @@ open class StringUtil {
      * - returns: if string is blank
      */
     public static func isBlank(_ string: String) -> Bool {
-        if (string.isEmpty) {
-            return true
-        }
+        return isBlankTextBytes(string.utf8)
+    }
 
-        for chr in string {
-            if (!StringUtil.isWhitespace(chr)) {
-                return false
+    // CharacterExt's whitespace set consists only of these ASCII scalars
+    // (including the CRLF Character). Any other byte makes the text nonblank,
+    // including malformed UTF-8, which String(decoding:) would replace.
+    @inline(__always)
+    static func isBlankTextBytes<Bytes: Collection>(_ bytes: Bytes) -> Bool where Bytes.Element == UInt8 {
+        for byte in bytes {
+            switch byte {
+            case 0x09, 0x0A, 0x0C, 0x0D, 0x20: continue
+            default: return false
             }
         }
         return true
