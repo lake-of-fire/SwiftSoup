@@ -1,0 +1,110 @@
+name: Qualify deeper search and ancestor fixes
+on:
+  push:
+    branches: [review/independent-hotspots-20260909]
+    paths: [.github/workflows/deeper-search-validation.yml]
+permissions:
+  contents: read
+jobs:
+  search-publication:
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install reconstruction interpreter
+        run: apt-get update && apt-get install -y python3
+      - name: Reconstruct exactly the measured source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p /tmp/deeper-input /tmp/deeper-evidence
+          cp Study/DeeperSearch/* /tmp/deeper-input/
+          git checkout --detach ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2
+          python3 /tmp/deeper-input/prepare.py /tmp/deeper-input
+          git add Sources/String.swift Tests/SwiftSoupTests/StringSearchBoundaryTest.swift Tools/benchmark_tokenqueue_search.swift Tools/compare_tokenqueue_search.py
+          git diff --cached --check
+          test "$(git write-tree)" = 52ac65caf0157434f24f3637370fb84dbbf9dad2
+          swift --version | tee /tmp/deeper-evidence/toolchain.txt
+      - name: Full release suite
+        shell: bash
+        run: set -o pipefail; swift test -j 4 -c release 2>&1 | tee /tmp/deeper-evidence/release.log
+      - name: Full AddressSanitizer debug suite
+        shell: bash
+        run: set -o pipefail; ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/deeper-evidence/asan.log
+      - name: Publish a new source-only branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = 52ac65caf0157434f24f3637370fb84dbbf9dad2
+          git diff --exit-code
+          branch=perf/tokenqueue-window-search-20260909
+          if git ls-remote --exit-code --heads origin "$branch"; then
+            echo 'Refusing to update an existing branch'; exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          sha=$(printf '%s\n' 'Advance bounded Character windows during delimiter search' | git commit-tree 52ac65caf0157434f24f3637370fb84dbbf9dad2 -p ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2)
+          git push origin "$sha:refs/heads/$branch"
+          printf '%s\n' "$sha" > /tmp/deeper-evidence/commit.txt
+          git ls-tree -r "$sha" > /tmp/deeper-evidence/tree.txt
+          git diff ec1c66083bc868ebbbc360dbd8c72d24dafb2eb2 "$sha" > /tmp/deeper-evidence/change.patch
+          git archive "$sha" | gzip > /tmp/deeper-evidence/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deeper-search-native
+          path: /tmp/deeper-evidence/
+          retention-days: 30
+  parent-linux:
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a63c119139c68662467048ee4441c0b0227f3735
+      - name: Verify exact source and run complete suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p /tmp/parent-evidence
+          test "$(git rev-parse HEAD^{tree})" = ba7c79605e608fd81ab1185bcbda5eb441c4bd54
+          git rev-parse HEAD | tee /tmp/parent-evidence/commit.txt
+          swift --version | tee /tmp/parent-evidence/toolchain.txt
+          swift test -j 4 -c release 2>&1 | tee /tmp/parent-evidence/release.log
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/parent-evidence/asan.log
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deeper-parent-linux
+          path: /tmp/parent-evidence/
+          retention-days: 30
+  parent-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a63c119139c68662467048ee4441c0b0227f3735
+      - name: Verify exact source and run complete suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/parent-evidence
+          test "$(git rev-parse HEAD^{tree})" = ba7c79605e608fd81ab1185bcbda5eb441c4bd54
+          git rev-parse HEAD | tee /tmp/parent-evidence/commit.txt
+          swift --version | tee /tmp/parent-evidence/toolchain.txt
+          swift test -j 4 -c release 2>&1 | tee /tmp/parent-evidence/release.log
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee /tmp/parent-evidence/asan.log
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deeper-parent-macos
+          path: /tmp/parent-evidence/
+          retention-days: 30
