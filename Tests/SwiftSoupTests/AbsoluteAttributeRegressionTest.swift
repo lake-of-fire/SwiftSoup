@@ -82,13 +82,28 @@ final class AbsoluteAttributeRegressionTest: XCTestCase {
 
     func testByteCollectionAbsURLOverloadsAgree() throws {
         let node = TextNode("text", nil)
-        try node.attr("href", "https://example.test/日本")
+        try node.attr("href", "https://example.test/%E6%97%A5%E6%9C%AC")
         let padded = Array("xhrefy".utf8)
         let slice = padded.dropFirst().dropLast()
         let expected = try node.absUrl("href")
-        XCTAssertFalse(expected.isEmpty)
+        XCTAssertEqual(expected, "https://example.test/%E6%97%A5%E6%9C%AC")
         XCTAssertEqual(try node.absUrl(slice), Array(expected.utf8))
         XCTAssertEqual(try node.absUrl(Array("HREF".utf8)), Array(expected.utf8))
+    }
+
+    func testUnescapedUnicodeURLPreservesPlatformResolverPolicy() throws {
+        // Apple uses CFURL here; Linux uses URL. This test guards overload
+        // parity without introducing a new cross-platform escaping policy.
+        let raw = "https://example.test/日本"
+        let expected = StringUtil.resolve("", relUrl: raw)
+        let node = TextNode("text", nil)
+        try node.attr("href", raw)
+        XCTAssertEqual(try node.absUrl("href"), expected)
+        XCTAssertEqual(try node.absUrl(Array("HREF".utf8)), Array(expected.utf8))
+        let padded = Array("xhrefy".utf8)
+        XCTAssertEqual(try node.absUrl(padded.dropFirst().dropLast()), Array(expected.utf8))
+        XCTAssertEqual(node.hasAttr("ABS:HREF"), !expected.isEmpty)
+        XCTAssertEqual(try node.attr("href"), raw)
     }
 
     func testAbsoluteURLLookupDoesNotDirtySourceOrTextCaches() throws {
