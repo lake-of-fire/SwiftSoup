@@ -1,0 +1,169 @@
+name: ASCII and current subset native qualification v2
+on:
+  push:
+    branches: [audit/ascii-subset-native-v2-20260909]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          path: product
+      - name: Exact merged-head debug release and AddressSanitizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          swift --version | tee evidence/swift.txt
+          uname -a > evidence/host.txt
+          git -C product rev-parse HEAD HEAD^{tree} > evidence/identity.txt
+          test "$(git -C product rev-parse HEAD)" = 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          test "$(git -C product rev-parse HEAD^{tree})" = c175bef3bd8b5420aaa7827794e819e1287fa5cd
+          export ASAN_OPTIONS=detect_leaks=0
+          status=0
+          for config in debug release asan; do
+            args=(-c debug)
+            if [ "$config" = release ]; then args=(-c release); fi
+            if [ "$config" = asan ]; then args=(--sanitize address); fi
+            set +e
+            (cd product && swift test -j 4 "${args[@]}") > "evidence/$config.log" 2>&1
+            result=$?
+            set -e
+            echo "$result" > "evidence/$config.exit"
+            if [ "$result" != 0 ]; then status=1; fi
+          done
+          test -z "$(git -C product status --porcelain)"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: current-subset-linux
+          path: evidence
+          retention-days: 30
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          path: product
+      - name: Exact merged-head debug release and AddressSanitizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          mkdir evidence
+          swift --version | tee evidence/swift.txt
+          uname -a > evidence/host.txt
+          git -C product rev-parse HEAD HEAD^{tree} > evidence/identity.txt
+          test "$(git -C product rev-parse HEAD)" = 4d7caaf72938f434f5cb3956de63a56bcefe5703
+          test "$(git -C product rev-parse HEAD^{tree})" = c175bef3bd8b5420aaa7827794e819e1287fa5cd
+          export ASAN_OPTIONS=detect_leaks=0
+          status=0
+          for config in debug release asan; do
+            args=(-c debug)
+            if [ "$config" = release ]; then args=(-c release); fi
+            if [ "$config" = asan ]; then args=(--sanitize address); fi
+            set +e
+            (cd product && swift test -j 4 "${args[@]}") > "evidence/$config.log" 2>&1
+            result=$?
+            set -e
+            echo "$result" > "evidence/$config.exit"
+            if [ "$result" != 0 ]; then status=1; fi
+          done
+          test -z "$(git -C product status --porcelain)"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: current-subset-macos
+          path: evidence
+          retention-days: 30
+  ascii-apple:
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1, 2]
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 02ead9def2dcaf0e2c24241484a7ab1c48da5865
+          path: candidate
+      - uses: actions/checkout@v4
+        with:
+          ref: 97e071d6d42794ebbca7716a22605176325c6445
+          path: baseline
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dependencies and exact identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          mkdir evidence
+          swift --version | tee evidence/swift.txt
+          uname -a > evidence/host.txt
+          sysctl -n hw.model >> evidence/host.txt
+          git -C baseline rev-parse HEAD HEAD^{tree} > evidence/baseline-identity.txt
+          git -C candidate rev-parse HEAD HEAD^{tree} > evidence/candidate-identity.txt
+          test "$(git -C baseline rev-parse HEAD^{tree})" = b0160b101ebc04284cc60379ed4685945e54a208
+          test "$(git -C candidate rev-parse HEAD^{tree})" = 7039703143c8e9deedcaed0c373f53f504910375
+          python -m pip install numpy scipy > evidence/python-dependencies.log 2>&1
+          python -m pip freeze > evidence/python-versions.txt
+      - name: Full candidate tests before any timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ASAN_OPTIONS=detect_leaks=0
+          status=0
+          for config in debug release asan; do
+            args=(-c debug)
+            if [ "$config" = release ]; then args=(-c release); fi
+            if [ "$config" = asan ]; then args=(--sanitize address); fi
+            set +e
+            (cd candidate && swift test -j 4 "${args[@]}") > "evidence/$config.log" 2>&1
+            result=$?
+            set -e
+            echo "$result" > "evidence/$config.exit"
+            if [ "$result" != 0 ]; then status=1; fi
+          done
+          exit "$status"
+      - name: Complete shipping libraries and one baseline-compiled client
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p shipping/A shipping/B
+          for revision in A B; do
+            source=baseline
+            if [ "$revision" = B ]; then source=candidate; fi
+            swiftc -swift-version 6 -O -g -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup -emit-module-path "shipping/$revision/SwiftSoup.swiftmodule" "$source"/Sources/*.swift -Xlinker -install_name -Xlinker '@rpath/libSwiftSoup.dylib' -o "shipping/$revision/libSwiftSoup.dylib" > "evidence/build-$revision.log" 2>&1
+          done
+          swiftc -swift-version 6 -O candidate/Tools/benchmark_character_classification.swift -I shipping/A -L shipping/A -lSwiftSoup -Xlinker -rpath -Xlinker "$PWD/shipping/A" -o shipping/client > evidence/client-build.log 2>&1
+          for revision in A B; do
+            env DYLD_PRINT_LIBRARIES=1 DYLD_LIBRARY_PATH="$PWD/shipping/$revision" shipping/client --verify > "evidence/public-$revision.json" 2> "evidence/dyld-$revision.log"
+            grep "$PWD/shipping/$revision/libSwiftSoup.dylib" "evidence/dyld-$revision.log"
+          done
+          cmp evidence/public-A.json evidence/public-B.json
+      - name: Balanced independent AB and real same-binary AA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python candidate/Tools/compare_character_classification.py --baseline-client shipping/client --candidate-client shipping/client --baseline-library shipping/A --candidate-library shipping/B --suite classification --blocks 8 --ms 180 --output evidence/ab 2>&1 | tee evidence/ab.log
+          python candidate/Tools/compare_character_classification.py --baseline-client shipping/client --candidate-client shipping/client --baseline-library shipping/A --candidate-library shipping/B --suite classification --blocks 8 --ms 140 --aa --output evidence/aa 2>&1 | tee evidence/aa.log
+          test -z "$(git -C candidate status --porcelain)"
+          test -z "$(git -C baseline status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ascii-apple-${{ matrix.trial }}
+          path: evidence
+          retention-days: 30
