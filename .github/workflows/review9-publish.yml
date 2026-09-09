@@ -1,0 +1,63 @@
+name: Verify review 9 publication blobs
+on:
+  push:
+    branches: [work/swiftsoup-review9-publication]
+    paths: [.github/workflows/review9-publish.yml]
+permissions:
+  contents: write
+jobs:
+  verify-upload:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 933051055c529d3d2460556a77209c64e2785f97
+          persist-credentials: false
+      - name: Reconstruct exact tested trees and upload immutable blobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo = 'lake-of-fire/SwiftSoup'
+          api = 'https://api.github.com/repos/' + repo
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          def request(path, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(api + path, data=data, headers=headers)
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  return json.load(response)
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          assert git('rev-parse', 'HEAD') == '933051055c529d3d2460556a77209c64e2785f97'
+          previous = git('rev-parse', 'HEAD^{tree}')
+          assert previous == '99cdd32945282b78d3c6d60726247d227433e3bb'
+          chunks = ['9d087f924fdba6b9163d1aa5499bead003866f27', '13bed187b6f6bbe497cf2e14633f378e29b69b68', 'ac1ab9209aae3802e30ef0ce36445886a4eb3751']
+          encoded = b''.join(base64.b64decode(request('/git/blobs/' + sha)['content']) for sha in chunks)
+          assert hashlib.sha256(encoded).hexdigest() == '4669391f4b38046b0350ccdb4603be5e4734f3b83781d925fcbfa13b8dba4312'
+          stages = json.loads(lzma.decompress(encoded))
+          manifests = []
+          for stage in stages:
+              patch = pathlib.Path('/tmp/review9.patch')
+              patch.write_text(stage['patch'])
+              subprocess.run(['git', 'apply', '--unidiff-zero', '--check', str(patch)], check=True)
+              subprocess.run(['git', 'apply', '--unidiff-zero', str(patch)], check=True)
+              subprocess.run(['git', 'add', '-A'], check=True)
+              tree = git('write-tree')
+              assert tree == stage['tree'], (stage['label'], tree, stage['tree'])
+              paths = git('diff', '--name-only', previous, tree).splitlines()
+              entries = []
+              for path in paths:
+                  data = pathlib.Path(path).read_bytes()
+                  expected = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+                  actual = request('/git/blobs', {'content': base64.b64encode(data).decode(), 'encoding': 'base64'})['sha']
+                  assert expected == actual, (path, expected, actual)
+                  entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': actual})
+              manifests.append({'label': stage['label'], 'base_tree': previous, 'tree': tree, 'entries': entries})
+              previous = tree
+          pathlib.Path('/tmp/review9-manifest.json').write_text(json.dumps(manifests, indent=2))
+          print('VERIFIED_TREES=' + json.dumps(manifests))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review9-verified-trees
+          path: /tmp/review9-manifest.json
