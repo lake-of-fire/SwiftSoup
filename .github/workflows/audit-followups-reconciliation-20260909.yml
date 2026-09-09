@@ -1,0 +1,92 @@
+name: Audit remaining SwiftSoup followups
+on:
+  push:
+    branches: [audit/export-and-verify-20260909]
+    paths: [.github/workflows/audit-followups-reconciliation-20260909.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.publish.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct reviewed semantic merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          git worktree add "$RUNNER_TEMP/candidate" f30d777c5e09eba3ce0fe81bd7fa74429380f95f
+          cd "$RUNNER_TEMP/candidate"
+          test "$(git rev-parse HEAD^{tree})" = cda74c750274756eb2d8131d3c94131df4a164c2
+          git merge --no-commit --no-ff 5c756af240f3bda77a4b82be5679ac2a1f622a4c || test "$(git diff --name-only --diff-filter=U)" = CHANGELOG.md
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('CHANGELOG.md')
+          text, count = re.subn(r'^<<<<<<<[^\n]*\n(.*?)^=======\n(.*?)^>>>>>>>[^\n]*\n', lambda m: m.group(1) + m.group(2), p.read_text(), flags=re.M | re.S)
+          assert count == 1
+          p.write_text(text)
+          PY
+          git add CHANGELOG.md
+          git commit -m 'Integrate virtual attribute presence and no-op mutation fixes'
+          git merge --no-commit --no-ff c4e9be30c3db8aa7e3954232f87211cb628ee99d || true
+          python3 - <<'PY'
+          import subprocess
+          actual = set(subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=U'], text=True).splitlines())
+          expected = {'CHANGELOG.md', 'Sources/Attributes.swift', 'Sources/TextNode.swift', 'Tests/SwiftSoupTests/TextSplitBoundaryTest.swift'}
+          assert actual == expected, actual
+          PY
+          python3 "$GITHUB_WORKSPACE/audit-followups-resolver-20260909.py"
+          git add CHANGELOG.md Sources/Attributes.swift Sources/TextNode.swift Tests/SwiftSoupTests/TextSplitBoundaryTest.swift Tests/SwiftSoupTests/TextSplitRefinementCompatibilityTest.swift
+          git diff --cached --check
+          test "$(git write-tree)" = 2a9d2dbbd582214356677c84b4b754675808338f
+      - name: Publish source-only history-preserving integration
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          commit=$(git commit-tree 2a9d2dbbd582214356677c84b4b754675808338f -p f30d777c5e09eba3ce0fe81bd7fa74429380f95f -p 5c756af240f3bda77a4b82be5679ac2a1f622a4c -p c4e9be30c3db8aa7e3954232f87211cb628ee99d -m 'Reconcile remaining attribute and text stacks while retaining every regression suite')
+          git push origin "$commit:refs/heads/fix/reconciled-followups-20260909"
+          echo "sha=$commit" >> "$GITHUB_OUTPUT"
+          echo "$commit 2a9d2dbbd582214356677c84b4b754675808338f"
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - name: Check exact committed source and full suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          git show -s --format='%H %T' > "$RUNNER_TEMP/evidence/source.txt"
+          test "$(git rev-parse HEAD^{tree})" = 2a9d2dbbd582214356677c84b4b754675808338f
+          swift --version > "$RUNNER_TEMP/evidence/compiler.txt"
+          swift test -j 4 > "$RUNNER_TEMP/evidence/debug.log" 2>&1
+          swift test -j 4 -c release > "$RUNNER_TEMP/evidence/release.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address > "$RUNNER_TEMP/evidence/asan.log" 2>&1
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: remaining-followups-${{ matrix.os }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 30
+          if-no-files-found: error
