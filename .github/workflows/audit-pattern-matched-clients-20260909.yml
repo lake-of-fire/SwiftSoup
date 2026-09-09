@@ -1,0 +1,93 @@
+name: Audit Pattern matched clients
+on:
+  push:
+    branches: [audit/export-and-verify-20260909]
+    paths: [.github/workflows/audit-pattern-matched-clients-20260909.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    outputs:
+      source: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 925a8e2b3848dbfd7ad024807acb8f697ae02b90
+          fetch-depth: 0
+      - name: Pair clients with their own non-resilient modules
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('Tools/compare_pattern_reuse.py')
+          text = p.read_text()
+          replacements = {
+              'Swift client once against baseline. Compilation and correctness suites must': 'identical Swift client source separately against each module. Pattern layout\n          changes without library evolution, so swapping libraries under one old client\n          is invalid. Compilation and correctness suites must',
+              "p.add_argument('--client', type=pathlib.Path, required=True)": "p.add_argument('--baseline-client', type=pathlib.Path, required=True)\n    p.add_argument('--candidate-client', type=pathlib.Path, required=True)",
+              'client = a.client.resolve()': "clients = {'A': a.baseline_client.resolve(), 'B': a.candidate_client.resolve()}",
+              'def run(role, workload, count, stage, pair):': 'def run(role, workload, count, stage, pair, logical_role=None):',
+              "[str(client), '--workload'": "[str(clients[role]), '--workload'",
+              'result.update(role=role, stage=stage, pair=pair)': 'result.update(role=role, logical_role=logical_role or role, stage=stage, pair=pair)',
+              "observed[role] = run('A' if stage == 'aa' else role, workload, count, stage, pair)": "observed[role] = run('A' if stage == 'aa' else role, workload, count, stage, pair, logical_role=role)",
+              "'client_sha256': hashlib.sha256(client.read_bytes()).hexdigest()": "'client_sha256': {role: hashlib.sha256(client.read_bytes()).hexdigest() for role, client in clients.items()}",
+          }
+          for old, new in replacements.items():
+              assert text.count(old) == 1, old
+              text = text.replace(old, new)
+          p.write_text(text)
+      - id: source
+        name: Publish source-only benchmark correction
+        run: |
+          set -euo pipefail
+          python3 -m py_compile Tools/compare_pattern_reuse.py
+          git diff --check
+          git diff --exit-code 925a8e2b3848dbfd7ad024807acb8f697ae02b90 -- Sources Tests
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          git add Tools/compare_pattern_reuse.py
+          git commit -m 'Pair Pattern benchmark clients with matching module layouts'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git push origin HEAD:refs/heads/audit/pattern-matched-client-source-20260909
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build matching shipping-library and client pairs before timing
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence" "$RUNNER_TEMP/base-lib" "$RUNNER_TEMP/candidate-lib"
+          git show -s --format='%H %T' | tee "$RUNNER_TEMP/evidence/source.txt"
+          swift --version | tee "$RUNNER_TEMP/evidence/compiler.txt"
+          git diff --exit-code 925a8e2b3848dbfd7ad024807acb8f697ae02b90 -- Sources Tests
+          git worktree add "$RUNNER_TEMP/baseline" 7d2d58c6cb6dd1d2251eb9563a844b3d01718afe
+          ext=so
+          [ "$(uname -s)" != Darwin ] || ext=dylib
+          swiftc -swift-version 6 -O -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup "$RUNNER_TEMP/baseline"/Sources/*.swift -emit-module-path "$RUNNER_TEMP/base-lib/SwiftSoup.swiftmodule" -o "$RUNNER_TEMP/base-lib/libSwiftSoup.$ext"
+          swiftc -swift-version 6 -O -whole-module-optimization -emit-library -emit-module -module-name SwiftSoup Sources/*.swift -emit-module-path "$RUNNER_TEMP/candidate-lib/SwiftSoup.swiftmodule" -o "$RUNNER_TEMP/candidate-lib/libSwiftSoup.$ext"
+          for variant in base candidate; do
+            swiftc -O -I "$RUNNER_TEMP/$variant-lib" -L "$RUNNER_TEMP/$variant-lib" -lSwiftSoup Tools/benchmark_pattern_reuse.swift -o "$RUNNER_TEMP/pattern-client-$variant"
+          done
+      - name: Complete fresh paired A-B and identical-binary controls
+        run: |
+          set -euo pipefail
+          python3 Tools/compare_pattern_reuse.py --baseline-library "$RUNNER_TEMP/base-lib" --candidate-library "$RUNNER_TEMP/candidate-lib" --baseline-client "$RUNNER_TEMP/pattern-client-base" --candidate-client "$RUNNER_TEMP/pattern-client-candidate" --output "$RUNNER_TEMP/evidence/timing" > "$RUNNER_TEMP/evidence/summary.log"
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-pattern-matched-${{ matrix.os }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 30
+          if-no-files-found: error
