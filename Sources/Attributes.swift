@@ -46,6 +46,53 @@ open class Attributes: NSCopying {
         var nameBytes: [UInt8]?
         var hasUppercase: Bool
         var value: PendingAttrValue
+
+        // Match Attribute's validated storage on every deferred read/write path.
+        // Byte storage takes precedence when both representations are present.
+        // The common small-batch prefilter avoids allocating a set or wrapping
+        // byte-array names. Its whitespace definition matches ByteSlice.trim().
+        // Equal names always produce the same bucket; collisions require an
+        // exact comparison and are never treated as proof of equality.
+        @inline(__always)
+        @usableFromInline
+        func canonicalNameBucket() -> UInt64? {
+            func bucket(_ bytes: UnsafeBufferPointer<UInt8>) -> UInt64? {
+                guard let first = bytes.first, let last = bytes.last else { return nil }
+                func whitespace(_ byte: UInt8) -> Bool { byte == 32 || (byte >= 9 && byte <= 13) }
+                guard !whitespace(first), !whitespace(last) else { return nil }
+                let previous = bytes.count > 1 ? bytes[bytes.count - 2] : first
+                let mixed = UInt64(first) ^ UInt64(last) ^ (UInt64(previous) &* 11) ^ (UInt64(bytes.count) &* 7)
+                return UInt64(1) << (mixed & 63)
+            }
+            if let nameBytes { return nameBytes.withUnsafeBufferPointer(bucket) }
+            if let nameSlice { return nameSlice.withUnsafeBytes(bucket) }
+            return nil
+        }
+
+        @inline(__always)
+        @usableFromInline
+        func hasSameName(as other: PendingAttribute) -> Bool {
+            if let nameBytes {
+                if let otherBytes = other.nameBytes { return nameBytes == otherBytes }
+                return other.nameSlice?.elementsEqual(nameBytes) ?? false
+            }
+            guard let nameSlice else { return false }
+            if let otherBytes = other.nameBytes { return nameSlice.elementsEqual(otherBytes) }
+            return other.nameSlice == nameSlice
+        }
+
+        @usableFromInline
+        func normalizedKey() -> ByteSlice? {
+            let key: ByteSlice
+            if let nameBytes {
+                key = ByteSlice.fromArray(nameBytes).trim()
+            } else if let nameSlice {
+                key = nameSlice.trim()
+            } else {
+                return nil
+            }
+            return key.isEmpty ? nil : key
+        }
     }
 
     @usableFromInline
@@ -90,7 +137,12 @@ open class Attributes: NSCopying {
     internal var keyIndexDirty: Bool = true
 
     @usableFromInline
-    internal var pendingAttributes: [PendingAttribute]? = nil
+    internal var pendingAttributes: [PendingAttribute]? = nil {
+        didSet { pendingNamesAreCanonical = false }
+    }
+
+    // Validated once per deferred batch, never once per lookup or serialization.
+    private var pendingNamesAreCanonical = false
     
     @usableFromInline
     internal var pendingAttributesCount: Int = 0
@@ -146,14 +198,7 @@ open class Attributes: NSCopying {
     internal func appendPending(_ pending: PendingAttribute) {
         if !attributes.isEmpty {
             // If materialized already, fall back to regular put.
-            let keySlice: ByteSlice
-            if let nameBytes = pending.nameBytes {
-                keySlice = ByteSlice.fromArray(nameBytes).trim()
-            } else if let nameSlice = pending.nameSlice {
-                keySlice = nameSlice.trim()
-            } else {
-                return
-            }
+            guard let keySlice = pending.normalizedKey() else { return }
             // Drop malformed attributes (e.g. an empty-after-trim key) rather than
             // trapping; jsoup does the same. See #392.
             guard let attribute = try? makeMaterializedAttribute(keySlice: keySlice, value: pending.value) else { return }
@@ -211,14 +256,7 @@ open class Attributes: NSCopying {
             } else {
                 DebugTrace.log("Attributes.ensureMaterialized: missing name")
             }
-            let keySlice: ByteSlice
-            if let nameBytes = pendingAttr.nameBytes {
-                keySlice = ByteSlice.fromArray(nameBytes).trim()
-            } else if let nameSlice = pendingAttr.nameSlice {
-                keySlice = nameSlice.trim()
-            } else {
-                continue
-            }
+            guard let keySlice = pendingAttr.normalizedKey() else { continue }
             // Drop malformed attributes (e.g. an empty-after-trim key) rather than
             // trapping; jsoup does the same. This is the path #392 hits via
             // getIgnoreCase during select()'s query-index rebuild.
@@ -383,9 +421,11 @@ open class Attributes: NSCopying {
     @inline(__always)
     open func get(key: [UInt8]) -> [UInt8] {
         DebugTrace.log("Attributes.get(key): \(String(decoding: key, as: UTF8.self))")
-        if attributes.isEmpty, let pendingValue = pendingValueCaseSensitive(key) {
-            DebugTrace.log("Attributes.get: pending value hit")
-            return pendingValue
+        if attributes.isEmpty {
+            if let value = pendingValueCaseSensitive(key) { return value }
+            // Validation may have materialized an ambiguous batch. Otherwise a
+            // miss is conclusive and must not instantiate every Attribute.
+            if attributes.isEmpty { return [] }
         }
         ensureMaterialized()
         if let ix = indexForKey(key) {
@@ -409,11 +449,12 @@ open class Attributes: NSCopying {
     
     @inline(__always)
     open func getIgnoreCase(key: [UInt8]) throws -> [UInt8] {
-        if attributes.isEmpty, let pendingValue = pendingValueIgnoreCase(key) {
-            return pendingValue
+        try Validate.notEmpty(string: key)
+        if attributes.isEmpty {
+            if let value = pendingValueIgnoreCase(key) { return value }
+            if attributes.isEmpty { return [] }
         }
         ensureMaterialized()
-        try Validate.notEmpty(string: key)
         let keySlice = ByteSlice.fromArray(key)
         let hasUppercase = Attributes.containsAsciiUppercase(key)
         if !Self.disableLowercasedKeyIndex, shouldBuildKeyIndex() {
@@ -446,6 +487,7 @@ open class Attributes: NSCopying {
     @inline(__always)
     @usableFromInline
     internal func getIgnoreCaseSlice(key: [UInt8]) throws -> ByteSlice {
+        try Validate.notEmpty(string: key)
         if attributes.isEmpty {
             if let pendingSlice = pendingValueIgnoreCaseSlice(key) {
                 return pendingSlice
@@ -453,9 +495,9 @@ open class Attributes: NSCopying {
             if let pendingValue = pendingValueIgnoreCase(key) {
                 return ByteSlice.fromArray(pendingValue)
             }
+            if attributes.isEmpty { return ByteSlice.empty }
         }
         ensureMaterialized()
-        try Validate.notEmpty(string: key)
         let keySlice = ByteSlice.fromArray(key)
         let hasUppercase = Attributes.containsAsciiUppercase(key)
         if !Self.disableLowercasedKeyIndex, shouldBuildKeyIndex() {
@@ -761,8 +803,9 @@ open class Attributes: NSCopying {
     
     @inline(__always)
     open func hasKey(key: [UInt8]) -> Bool {
-        if attributes.isEmpty, pendingHasKeyCaseSensitive(key) {
-            return true
+        if attributes.isEmpty {
+            if pendingHasKeyCaseSensitive(key) { return true }
+            if attributes.isEmpty { return false }
         }
         ensureMaterialized()
         return indexForKey(key) != nil
@@ -783,8 +826,9 @@ open class Attributes: NSCopying {
 
     @inline(__always)
     open func hasKeyIgnoreCase(key: [UInt8]) -> Bool {
-        if attributes.isEmpty, pendingHasKeyIgnoreCase(key) {
-            return true
+        if attributes.isEmpty {
+            if pendingHasKeyIgnoreCase(key) { return true }
+            if attributes.isEmpty { return false }
         }
         ensureMaterialized()
         guard !key.isEmpty else { return false }
@@ -813,8 +857,9 @@ open class Attributes: NSCopying {
     
     @inlinable
     open func hasKeyIgnoreCase<T: Collection>(key: T) -> Bool where T.Element == UInt8 {
-        if attributes.isEmpty, pendingHasKeyIgnoreCase(key) {
-            return true
+        if attributes.isEmpty {
+            if pendingHasKeyIgnoreCase(key) { return true }
+            if attributes.isEmpty { return false }
         }
         ensureMaterialized()
         guard !key.isEmpty else { return false }
@@ -849,76 +894,110 @@ open class Attributes: NSCopying {
     @inline(__always)
     @usableFromInline
     internal func pendingHasKeyCaseSensitive(_ key: [UInt8]) -> Bool {
-        return pendingValueCaseSensitive(key) != nil
+        return pendingAttributeCaseSensitive(key) != nil
     }
 
     @inline(__always)
     @usableFromInline
     internal func pendingHasKeyIgnoreCase<T: Collection>(_ key: T) -> Bool where T.Element == UInt8 {
-        return pendingValueIgnoreCase(key) != nil
+        return pendingAttributeIgnoreCase(key) != nil
+    }
+
+    // Deferred reads can stop at the first match only when names are valid,
+    // normalized, and unique. Ambiguous batches use the existing materializer,
+    // which keeps the first position and the last value of an exact duplicate.
+    // Ordinary parser batches stay deferred, and validation is amortized once.
+    @usableFromInline
+    internal func ensureCanonicalPendingNames() {
+        guard !pendingNamesAreCanonical, attributes.isEmpty else { return }
+        guard let pending = pendingAttributes, !pending.isEmpty else {
+            pendingNamesAreCanonical = true
+            return
+        }
+        // A small bitset rejects most impossible duplicates without a name
+        // allocation or pairwise comparison. A bucket collision is only a hint:
+        // always compare exact bytes before declaring a duplicate. Cap this path
+        // so even deliberately colliding names have bounded quadratic work.
+        if pending.count <= 64 {
+            var seenBuckets: UInt64 = 0
+            for index in pending.indices {
+                let attr = pending[index]
+                guard let bucket = attr.canonicalNameBucket() else {
+                    ensureMaterialized()
+                    pendingNamesAreCanonical = true
+                    return
+                }
+                if seenBuckets & bucket != 0,
+                   pending[..<index].contains(where: { attr.hasSameName(as: $0) }) {
+                    ensureMaterialized()
+                    pendingNamesAreCanonical = true
+                    return
+                }
+                seenBuckets |= bucket
+            }
+            pendingNamesAreCanonical = true
+            return
+        }
+        var seen = Set<ByteSlice>()
+        seen.reserveCapacity(pending.count)
+        for attr in pending {
+            let rawCount = attr.nameBytes?.count ?? attr.nameSlice?.count ?? 0
+            guard let key = attr.normalizedKey(), key.count == rawCount,
+                  seen.insert(key).inserted else {
+                ensureMaterialized()
+                pendingNamesAreCanonical = true
+                return
+            }
+        }
+        pendingNamesAreCanonical = true
+    }
+
+    @inline(__always)
+    @usableFromInline
+    internal func pendingAttributeCaseSensitive(_ key: [UInt8]) -> PendingAttribute? {
+        ensureCanonicalPendingNames()
+        guard !key.isEmpty, attributes.isEmpty, let pending = pendingAttributes else { return nil }
+        for attr in pending {
+            if let nameBytes = attr.nameBytes {
+                if nameBytes == key { return attr }
+            } else if let nameSlice = attr.nameSlice, equalsSlice(nameSlice, key) {
+                return attr
+            }
+        }
+        return nil
+    }
+
+    @inline(__always)
+    @usableFromInline
+    internal func pendingAttributeIgnoreCase<T: Collection>(_ key: T) -> PendingAttribute? where T.Element == UInt8 {
+        ensureCanonicalPendingNames()
+        guard !key.isEmpty, attributes.isEmpty, let pending = pendingAttributes else { return nil }
+        for attr in pending {
+            if let nameBytes = attr.nameBytes {
+                if equalsIgnoreCase(nameBytes, key) { return attr }
+            } else if let nameSlice = attr.nameSlice, equalsIgnoreCase(nameSlice, key) {
+                return attr
+            }
+        }
+        return nil
     }
 
     @inline(__always)
     @usableFromInline
     internal func pendingValueCaseSensitive(_ key: [UInt8]) -> [UInt8]? {
-        guard !key.isEmpty, attributes.isEmpty, let pending = pendingAttributes, !pending.isEmpty else {
-            return nil
-        }
-        for pendingAttr in pending {
-            if let nameBytes = pendingAttr.nameBytes {
-                if nameBytes == key {
-                    return materializePendingValue(pendingAttr.value)
-                }
-            } else if let nameSlice = pendingAttr.nameSlice {
-                if equalsSlice(nameSlice, key) {
-                    return materializePendingValue(pendingAttr.value)
-                }
-            }
-        }
-        return nil
+        return pendingAttributeCaseSensitive(key).map { materializePendingValue($0.value) }
     }
 
     @inline(__always)
     @usableFromInline
     internal func pendingValueCaseSensitiveSlice(_ key: [UInt8]) -> ByteSlice? {
-        guard !key.isEmpty, attributes.isEmpty, let pending = pendingAttributes, !pending.isEmpty else {
-            return nil
-        }
-        for pendingAttr in pending {
-            if let nameBytes = pendingAttr.nameBytes {
-                if nameBytes == key {
-                    switch pendingAttr.value {
-                    case .none, .empty:
-                        return ByteSlice.empty
-                    case .slice(let slice):
-                        return slice
-                    case .bytes(let bytes):
-                        return ByteSlice.fromArray(bytes)
-                    default:
-                        return nil
-                    }
-                }
-            } else if let nameSlice = pendingAttr.nameSlice {
-                if equalsSlice(nameSlice, key) {
-                    switch pendingAttr.value {
-                    case .none, .empty:
-                        return ByteSlice.empty
-                    case .slice(let slice):
-                        return slice
-                    case .bytes(let bytes):
-                        return ByteSlice.fromArray(bytes)
-                    default:
-                        return nil
-                    }
-                }
-            }
-        }
-        return nil
+        return pendingAttributeCaseSensitive(key).flatMap { pendingValueSlice($0.value) }
     }
 
     @inline(__always)
     @usableFromInline
     internal func valueSliceCaseSensitive(_ key: [UInt8]) -> ByteSlice? {
+        ensureCanonicalPendingNames()
         if attributes.isEmpty {
             if let pendingSlice = pendingValueCaseSensitiveSlice(key) {
                 return pendingSlice
@@ -938,59 +1017,29 @@ open class Attributes: NSCopying {
     @inline(__always)
     @usableFromInline
     internal func pendingValueIgnoreCase<T: Collection>(_ key: T) -> [UInt8]? where T.Element == UInt8 {
-        guard !key.isEmpty, attributes.isEmpty, let pending = pendingAttributes, !pending.isEmpty else {
-            return nil
-        }
-        for pendingAttr in pending {
-            if let nameBytes = pendingAttr.nameBytes {
-                if equalsIgnoreCase(nameBytes, key) {
-                    return materializePendingValue(pendingAttr.value)
-                }
-            } else if let nameSlice = pendingAttr.nameSlice {
-                if equalsIgnoreCase(nameSlice, key) {
-                    return materializePendingValue(pendingAttr.value)
-                }
-            }
-        }
-        return nil
+        return pendingAttributeIgnoreCase(key).map { materializePendingValue($0.value) }
     }
 
     @inline(__always)
     @usableFromInline
     internal func pendingValueIgnoreCaseSlice<T: Collection>(_ key: T) -> ByteSlice? where T.Element == UInt8 {
-        guard !key.isEmpty, attributes.isEmpty, let pending = pendingAttributes, !pending.isEmpty else {
+        return pendingAttributeIgnoreCase(key).flatMap { pendingValueSlice($0.value) }
+    }
+
+    @inline(__always)
+    @usableFromInline
+    internal func pendingValueSlice(_ value: PendingAttrValue) -> ByteSlice? {
+        switch value {
+        case .none, .empty:
+            return ByteSlice.empty
+        case .slice(let slice):
+            return slice
+        case .bytes(let bytes):
+            return ByteSlice.fromArray(bytes)
+        case .slices:
+            // The byte-returning fallback joins fragmented storage only when needed.
             return nil
         }
-        for pendingAttr in pending {
-            if let nameBytes = pendingAttr.nameBytes {
-                if equalsIgnoreCase(nameBytes, key) {
-                    switch pendingAttr.value {
-                    case .none, .empty:
-                        return ByteSlice.empty
-                    case .slice(let slice):
-                        return slice
-                    case .bytes(let bytes):
-                        return ByteSlice.fromArray(bytes)
-                    default:
-                        return nil
-                    }
-                }
-            } else if let nameSlice = pendingAttr.nameSlice {
-                if equalsIgnoreCase(nameSlice, key) {
-                    switch pendingAttr.value {
-                    case .none, .empty:
-                        return ByteSlice.empty
-                    case .slice(let slice):
-                        return slice
-                    case .bytes(let bytes):
-                        return ByteSlice.fromArray(bytes)
-                    default:
-                        return nil
-                    }
-                }
-            }
-        }
-        return nil
     }
 
     @inline(__always)
@@ -1147,14 +1196,7 @@ open class Attributes: NSCopying {
     @usableFromInline
     @inline(__always)
     internal func appendPendingHtml(_ attr: PendingAttribute, _ accum: StringBuilder, _ out: OutputSettings) {
-        let keySlice: ByteSlice
-        if let nameSlice = attr.nameSlice {
-            keySlice = nameSlice.trim()
-        } else if let nameBytes = attr.nameBytes {
-            keySlice = ByteSlice.fromArray(nameBytes).trim()
-        } else {
-            return
-        }
+        guard let keySlice = attr.normalizedKey() else { return }
         accum.append(keySlice)
 
         var valueSlice: ByteSlice? = nil
@@ -1180,7 +1222,7 @@ open class Attributes: NSCopying {
             hasValue = true
             valueSlice = ByteSlice.fromArray(bytes)
         }
-        let keyLower = attr.hasUppercase ? keySlice.lowercased() : keySlice
+        let keyLower = keySlice.lowercased()
         let isImplicitBoolean = {
             switch attr.value {
             case .none: return true
@@ -1209,6 +1251,7 @@ open class Attributes: NSCopying {
     
     @inlinable
     public func html(accum: StringBuilder, out: OutputSettings ) throws {
+        ensureCanonicalPendingNames()
         if attributes.isEmpty, let pending = pendingAttributes, !pending.isEmpty {
             for attr in pending {
                 accum.append(UTF8Arrays.whitespace)
