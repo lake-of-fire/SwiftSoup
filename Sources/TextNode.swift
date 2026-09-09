@@ -398,6 +398,11 @@ open class TextNode: Node {
         return try super.attr(attributeKey, attributeValue)
     }
 
+    open override func hasAttr(_ attributeKey: [UInt8]) -> Bool {
+        ensureAttributes()
+        return super.hasAttr(attributeKey)
+    }
+
     open override func hasAttr(_ attributeKey: String) -> Bool {
         ensureAttributes()
         return super.hasAttr(attributeKey)

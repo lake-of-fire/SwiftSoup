@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Make deferred attribute getters, presence checks, regenerated HTML, and selector indexes agree with materialized storage: trim/drop invalid keys and preserve the first position with the last value for exact duplicate keys. Distinct case variants retain their existing order. This corrects read-order-dependent results without changing the fork's materialized duplicate-key policy or eagerly creating Attribute objects.
+* Initialize deferred TextNode attributes for byte-array `hasAttr` checks, just as for String checks. Reads do not dirty the source or restore removed text.
 * Include comment contents in `Element.data()` and `:containsData`, as documented, in descendant document order. Traverse iteratively without intermediate subtree strings or materializing single-slice data nodes. Custom DataNode getter overrides remain respected. Queries previously ignoring comment contents may now match.
 * Observe direct `Attribute.setKey` / `setValue` edits through every live owning collection and node, including references shared by `put` / `addAll`. Removed or replaced references no longer invalidate former owners. Reads that materialize deferred text/data do not count as DOM mutations.
 * Clone mutable attribute objects independently, including implicit boolean attributes, while retaining immutable byte storage sharing. Cloned DOM mutations no longer change the original. Attribute keys that are empty after trimming are rejected before mutation.
