@@ -1,0 +1,102 @@
+name: Verify reconciled correctness tree
+on:
+  push:
+    branches: [audit/export-and-verify-20260909]
+    paths: [.github/workflows/audit-reconcile-correctness-20260909.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    timeout-minutes: 20
+    outputs:
+      source_sha: ${{ steps.publish.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct the locally tested tree from exact source objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach 21ca35c9bd1724a8ddd19ea28ab8394398e7052d
+          test "$(git rev-parse HEAD^{tree})" = 37c9581942db133a2196cc5dc83f5c89fed04502
+          git diff --name-only 933051055c529d3d2460556a77209c64e2785f97 c49cb71fd8bfc1897fc00837bfb3b2c48594eaa8 | while IFS= read -r path; do
+            git checkout c49cb71fd8bfc1897fc00837bfb3b2c48594eaa8 -- "$path"
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          def once(text, old, new):
+              assert text.count(old) == 1, old
+              return text.replace(old, new, 1)
+          p = Path('Sources/TextNode.swift')
+          p.write_text(once(p.read_text(), '    open override func hasAttr(_ attributeKey: String) -> Bool {', '    open override func hasAttr(_ attributeKey: [UInt8]) -> Bool {\n        ensureAttributes()\n        return super.hasAttr(attributeKey)\n    }\n\n    open override func hasAttr(_ attributeKey: String) -> Bool {'))
+          original = subprocess.check_output(['git', 'show', '20a0cd78157cc958f52656295fd54dcf08f043ab:Tests/SwiftSoupTests/DeferredAttributeConsistencyTest.swift'], text=True)
+          legacy = once(original, 'final class DeferredAttributeConsistencyTest:', 'final class DeferredAttributeLegacyContractTest:')
+          legacy = once(legacy, 'testCanonicalDeferredReadsDoNotMaterializeAttributesOrDirtyOwners', 'testAmbiguousDeferredReadsMaterializeWithoutDirtyingOwners')
+          legacy = once(legacy, '        XCTAssertTrue(attrs.attributes.isEmpty, "deferred reads should retain byte-backed storage")', '        XCTAssertFalse(attrs.attributes.isEmpty, "ambiguous names now use authoritative materialized storage")\n        XCTAssertEqual(attrs.get(key: "class"), "after")')
+          legacy = once(legacy, '        XCTAssertTrue(p.getAttributes()?.attributes.isEmpty == true)', '        XCTAssertEqual(p.getAttributes()?.get(key: "id"), "new")')
+          Path('Tests/SwiftSoupTests/DeferredAttributeLegacyContractTest.swift').write_text(legacy)
+          p = Path('Tests/SwiftSoupTests/DeferredAttributeModelTest.swift')
+          p.write_text(once(p.read_text(), '        XCTAssertTrue(attributes.attributes.isEmpty)\n        XCTAssertEqual(attributes.pendingAttributesCount, 1)\n        guard case let .slice(retained) = attributes.pendingAttributes?.first?.value else {\n            return XCTFail("Value should still be a byte slice")\n        }', '        XCTAssertEqual(attributes.size(), 1)\n        let retained = try attributes.getIgnoreCaseSlice(key: Array("title".utf8))'))
+          p = Path('CHANGELOG.md')
+          p.write_text(once(p.read_text(), '* Reduce cold deferred-name validation work', '* Preserve byte-array TextNode presence initialization and the complete earlier public-behavior regression suites while integrating the alternative canonical-name refinement. Ambiguous deferred attributes now materialize; their reads still preserve source reuse and mutation versions.\n* Reduce cold deferred-name validation work'))
+          PY
+          git add Sources Tests CHANGELOG.md
+          git diff --cached --check
+          test "$(git write-tree)" = 4d5afc95057abf2749c97a299c3c5d92a7d1d946
+      - name: Verify exact reconstructed source
+        run: |
+          set -euo pipefail
+          swift --version
+          swift test -c release 2>&1 | tee "$RUNNER_TEMP/reconciled-release.log"
+      - name: Publish source-only commit without staging ancestry
+        id: publish
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = 4d5afc95057abf2749c97a299c3c5d92a7d1d946
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          sha=$(git commit-tree 4d5afc95057abf2749c97a299c3c5d92a7d1d946 -p 21ca35c9bd1724a8ddd19ea28ab8394398e7052d -p c49cb71fd8bfc1897fc00837bfb3b2c48594eaa8 -m 'Reconcile correctness stacks without losing TextNode or legacy contracts')
+          git push origin "$sha:refs/heads/fix/reconciled-correctness-20260909"
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$sha" > "$RUNNER_TEMP/reconciled-source-sha.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-reconciled-publication
+          path: |
+            ${{ runner.temp }}/reconciled-release.log
+            ${{ runner.temp }}/reconciled-source-sha.txt
+          retention-days: 30
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - name: Debug and release on actual published commit
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD^{tree})" = 4d5afc95057abf2749c97a299c3c5d92a7d1d946
+          swift --version
+          swift test 2>&1 | tee "$RUNNER_TEMP/reconciled-debug.log"
+          swift test -c release 2>&1 | tee "$RUNNER_TEMP/reconciled-release.log"
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-reconciled-${{ matrix.os }}
+          path: ${{ runner.temp }}/reconciled-*.log
+          retention-days: 30
