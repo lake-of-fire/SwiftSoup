@@ -1,0 +1,74 @@
+name: Publish verified attribute review blobs
+on:
+  push:
+    branches: [staging/attribute-review7-20260908]
+permissions:
+  contents: write
+jobs:
+  verify-and-upload:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 2c6eb017fbc6f7135571de07252a6a603ee287e6
+          persist-credentials: false
+      - name: Verify complete source trees and upload immutable blobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, gzip, hashlib, json, os, pathlib, subprocess, urllib.request
+          REPO = 'lake-of-fire/SwiftSoup'
+          BASE = '2c6eb017fbc6f7135571de07252a6a603ee287e6'
+          def git(*args):
+              return subprocess.check_output(['git', *args]).decode().strip()
+          def api(path, payload=None):
+              data = json.dumps(payload).encode() if payload is not None else None
+              request = urllib.request.Request('https://api.github.com/repos/' + REPO + path, data=data,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          def patch(shas, expected, repair=False):
+              parts = []
+              for sha in shas:
+                  data = base64.b64decode(api('/git/blobs/' + sha)['content'])
+                  assert hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest() == sha
+                  parts.append(data.decode())
+              encoded = ''.join(parts)
+              if repair:
+                  # Correct one known transport transcription before checking the original checksum.
+                  assert encoded.count('lo1Oj1ejUOG') == 1
+                  encoded = encoded.replace('lo1Oj1ejUOG', 'lo1Oj1eiUOG')
+              decoded = gzip.decompress(base64.b64decode(encoded, validate=True))
+              assert hashlib.sha256(decoded).hexdigest() == expected
+              subprocess.run(['git', 'apply', '--check', '-'], input=decoded, check=True)
+              subprocess.run(['git', 'apply', '--index', '-'], input=decoded, check=True)
+          seen = set()
+          def upload(expected_tree, paths):
+              actual_tree = git('write-tree')
+              assert actual_tree == expected_tree, (expected_tree, actual_tree)
+              entries = []
+              for path in paths:
+                  data = pathlib.Path(path).read_bytes()
+                  expected = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+                  if expected not in seen:
+                      actual = api('/git/blobs', {'content': base64.b64encode(data).decode(), 'encoding': 'base64'})['sha']
+                      assert actual == expected, (path, expected, actual)
+                      seen.add(expected)
+                  entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': expected})
+              return {'tree': actual_tree, 'entries': entries}
+          assert git('rev-parse', 'HEAD') == BASE
+          assert git('write-tree') == 'ad29b90f9d1db9f1cfa0106100cf4713a961f4f2'
+          patch(['4230e1e482668ac0e1c45057bf8da3bb489d573d','ea466f4fc7fbfe32f884a43fb482df28f3c9ce7c','d390f87aa0fd616b4ea55927a979e42a64405e76'], 'd6b38164a224ce63a3e8cc1de04181685c73e604e3ef41d033f6c5185e6877fd')
+          assert git('write-tree') == '4c9fcc30049725b1626171408f8ce591ccb17658'
+          patch(['d55e43ce63dae1513b21c8963a60e71b8efa2e87'], '5e8b50a46b7af154ff6f648578015e7dfe19ba87b8988d07eaa4d9fb38c65a3d')
+          owner = upload('b50dcaf3e5e65500bbe34e32d1e892a83b336a3d', git('diff','--cached','--name-only',BASE).splitlines())
+          patch(['19adaabe5196ef8278368d33174540fcaab7f05c'], 'f16ef1de84c12ae52ac3aa8591bf7d01d82d621e4a50f90f20d9d2a89d97c695', repair=True)
+          data = upload('99cdd32945282b78d3c6d60726247d227433e3bb', ['CHANGELOG.md','Sources/Element.swift','Tests/SwiftSoupTests/DataTraversalTest.swift'])
+          manifest = {'baseline': BASE, 'owner': owner, 'data': data}
+          pathlib.Path('/tmp/verified-stack-blobs.json').write_text(json.dumps(manifest, indent=2))
+          print('VERIFIED_STACK_BLOBS=' + json.dumps(manifest))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-attribute-stack-blobs
+          path: /tmp/verified-stack-blobs.json
