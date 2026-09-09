@@ -1206,8 +1206,20 @@ open class CssSelector {
     // exclude set. package open so that Elements can implement .not() selector.
     static func filterOut(_ elements: Array<Element>, _ outs: Array<Element>) -> Elements {
         let output: Elements = Elements()
-        for el: Element in elements where !outs.contains(el) {
-            output.add(el)
+        if elements.count >= 64 && outs.count >= 64 {
+            // Element equality requires object identity. Keep input order and
+            // duplicates, but avoid rescanning a large exclusion list per item.
+            var excluded = Set<ObjectIdentifier>()
+            excluded.reserveCapacity(outs.count)
+            for el in outs { excluded.insert(ObjectIdentifier(el)) }
+            for el in elements where !excluded.contains(ObjectIdentifier(el)) {
+                output.add(el)
+            }
+        } else {
+            // Small or strongly asymmetric inputs do not amortize a hash table.
+            for el in elements where !outs.contains(el) {
+                output.add(el)
+            }
         }
         return output
     }
