@@ -204,6 +204,15 @@ public class OrderedSet<T: Hashable> {
 
 			// Keep the stored representative, not a possibly equal incoming object.
 			let moved = sequencedContents[position]
+			// A one-step move needs only the original direct swap, not a shift loop.
+			if position == index - 1 || position == index + 1 {
+				let displaced = sequencedContents[index]
+				sequencedContents[position] = displaced
+				sequencedContents[index] = moved
+				contents[moved] = index
+				contents[displaced] = position
+				return
+			}
 			if position < index {
 				for i in position..<index {
 					let shifted = sequencedContents[i + 1]
