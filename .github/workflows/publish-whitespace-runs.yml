@@ -1,0 +1,94 @@
+name: Publish and validate normalized whitespace runs
+on:
+  push:
+    branches: [review/normalized-whitespace-publication-20260909]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.publish.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, subprocess
+          p = Path('Sources/StringUtil.swift')
+          assert hashlib.sha256(p.read_bytes()).hexdigest() == 'adfb5d37382b4dbc0887b92167829d99217b28053298b558d94f29b2844c3c16'
+          expected = {
+              'Tests/SwiftSoupTests/WhitespaceRunTest.swift': '78b3506d89bc939c79ad6fce1cd6377df75930dd',
+              'Tools/benchmark_whitespace_runs.swift': '0bea91e9fe8fc16d8e457808643da279305eb034',
+              'Tools/compare_whitespace_runs.py': '9fc11c03494a1e062a493142c803e08c68b0bbcd'
+          }
+          for name, sha in expected.items():
+              assert subprocess.check_output(['git', 'hash-object', name], text=True).strip() == sha
+          old = '''            accum.write(contentsOf: basePtr.advanced(by: idx), count: scalarByteCount)
+                      lastWasWhite = false
+                      reachedNonWhite = true
+                      idx = next'''
+          new = '''            // Batch adjacent non-ASCII sequences that need no whitespace rewrite.
+                      // Preserve the existing lead-byte stepping and truncated-tail behavior.
+                      var runEnd = next
+                      while runEnd < count {
+                          let lead = basePtr[runEnd]
+                          if lead < TokeniserStateVars.asciiUpperLimitByte { break }
+                          if lead == utf8NBSPLead && runEnd + 1 < count && basePtr[runEnd + 1] == utf8NBSPTrail { break }
+                          let width = lead < utf8Lead3Min ? 2 : (lead < utf8Lead4Min ? 3 : 4)
+                          if width > count - runEnd { break }
+                          runEnd += width
+                      }
+                      accum.write(contentsOf: basePtr.advanced(by: idx), count: runEnd - idx)
+                      lastWasWhite = false
+                      reachedNonWhite = true
+                      idx = runEnd'''
+          # YAML removes ten spaces from every run-block line, including strings.
+          text = p.read_text()
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, new))
+          assert hashlib.sha256(p.read_bytes()).hexdigest() == 'f50d4e5165946234caaef62c3409cbd7f9c11776c9340f048c0ed22ecc175161'
+          PY
+          git rm .github/workflows/publish-whitespace-runs.yml
+          git add Sources/StringUtil.swift
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          tree=$(git write-tree)
+          sha=$(printf '%s\n' 'perf: batch unchanged Unicode during byte-backed text normalization' | git commit-tree "$tree" -p c9c37c80eb571aabba59a1f3ef31af9b072af4a8)
+          git push origin "$sha:refs/heads/perf/normalized-whitespace-runs-20260909"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "PUBLISHED_COMMIT=$sha TREE=$tree"
+          git diff --stat c9c37c80eb571aabba59a1f3ef31af9b072af4a8 "$sha"
+  linux:
+    needs: publish
+    runs-on: ubuntu-22.04
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.sha }}
+      - run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          swift --version
+          swift test -c release -j 2
+  macos:
+    needs: publish
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.sha }}
+      - run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          swift --version
+          swift test -c release -j 2
