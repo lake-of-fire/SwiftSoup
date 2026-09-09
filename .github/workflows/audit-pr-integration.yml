@@ -1,0 +1,65 @@
+name: Exact PR Integration Audit
+on:
+  push:
+    branches: [audit/pr-integration-20260909]
+    paths: [.github/workflows/audit-pr-integration.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-22.04
+            container: swift:6.1-jammy
+          - name: macos
+            os: macos-15
+            container: ''
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: 1b8e99867767e9a2487fc9ad27d226aaac72bbf7
+      TREE_SHA: 442d6a057ea719c779dc34fd236fab03aed7d48b
+      EXPECTED_TESTS: '1208'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify frozen source and export archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$RUNNER_TEMP/evidence"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$TREE_SHA"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD 'HEAD^{tree}' | tee "$RUNNER_TEMP/evidence/identity.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/evidence/tree.txt"
+          swift --version | tee "$RUNNER_TEMP/evidence/swift-version.txt"
+          git archive --format=tar HEAD > "$RUNNER_TEMP/evidence/source.tar"
+      - name: Full debug, release and AddressSanitizer suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -j 4 2>&1 | tee "$RUNNER_TEMP/evidence/debug.log"
+          grep -F "Executed $EXPECTED_TESTS tests, with 17 tests skipped and 0 failures" "$RUNNER_TEMP/evidence/debug.log"
+          swift test -j 4 -c release 2>&1 | tee "$RUNNER_TEMP/evidence/release.log"
+          grep -F "Executed $EXPECTED_TESTS tests, with 17 tests skipped and 0 failures" "$RUNNER_TEMP/evidence/release.log"
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address 2>&1 | tee "$RUNNER_TEMP/evidence/asan.log"
+          grep -F "Executed $EXPECTED_TESTS tests, with 17 tests skipped and 0 failures" "$RUNNER_TEMP/evidence/asan.log"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$TREE_SHA"
+          test -z "$(git status --porcelain)"
+          printf 'All three suites passed; checkout unchanged; leak detection disabled.\n' | tee "$RUNNER_TEMP/evidence/acceptance.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-${{ env.SOURCE_SHA }}-${{ matrix.name }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 14
