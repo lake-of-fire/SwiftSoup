@@ -143,11 +143,14 @@ public class OrderedSet<T: Hashable> {
 	public func swapObject(_ first: T, with second: T) {
 		if let firstPosition = contents[first] {
 			if let secondPosition = contents[second] {
-				contents[first] = secondPosition
-				contents[second] = firstPosition
-
-				sequencedContents[firstPosition] = second
-				sequencedContents[secondPosition] = first
+				guard firstPosition != secondPosition else { return }
+				// Arguments identify members; a swap must not replace the stored
+				// representatives with equal-but-distinct lookup values.
+				let storedFirst = sequencedContents[firstPosition]
+				let storedSecond = sequencedContents[secondPosition]
+				contents[storedFirst] = secondPosition
+				contents[storedSecond] = firstPosition
+				sequencedContents.swapAt(firstPosition, secondPosition)
 			}
 		}
 	}
@@ -169,18 +172,32 @@ public class OrderedSet<T: Hashable> {
 	}
 
 	/**
-	Tests if a the ordered set is a subset of another sequence.
+	Tests if the ordered set is a subset of another sequence.
+	Collections retain their membership checks; other sequences are consumed
+	at most once and stop when all members are found. Empty receivers do not
+	consume the input. Temporary storage is bounded by the receiver count.
 	- parameter    sequence:   The sequence to check.
 	- returns:                 true if the sequence contains all objects contained in the receiver, otherwise false.
 	*/
 	public func isSubset<S: Sequence>(of sequence: S) -> Bool where S.Iterator.Element == T {
-		for (object, _) in contents {
-			if !sequence.contains(object) {
-				return false
+		guard !contents.isEmpty else { return true }
+		// Collections are restartable and may answer contains without scanning
+		// (notably Set and Range). A singleton needs only one membership query,
+		// even for a single-pass Sequence, and needs no temporary membership set.
+		if contents.count == 1 || sequence is any Collection {
+			for object in contents.keys {
+				if !sequence.contains(object) { return false }
 			}
+			return true
 		}
-
-		return true
+		// Sequence need not be restartable. Track required members while
+		// consuming a single iterator, without retaining the input's tail.
+		var remaining = Set(contents.keys)
+		for object in sequence {
+			remaining.remove(object)
+			if remaining.isEmpty { return true }
+		}
+		return false
 	}
 
 	/**
@@ -396,7 +413,7 @@ public struct OrderedSetGenerator<T: Hashable>: IteratorProtocol {
 extension OrderedSetGenerator where T: Comparable {}
 
 public func +<T, S: Sequence> (lhs: OrderedSet<T>, rhs: S) -> OrderedSet<T> where S.Iterator.Element == T {
-	let joinedSet = lhs
+	let joinedSet = OrderedSet(sequence: lhs)
 	joinedSet.append(contentsOf: rhs)
 
 	return joinedSet
@@ -407,7 +424,7 @@ public func +=<T, S: Sequence> (lhs: inout OrderedSet<T>, rhs: S) where S.Iterat
 }
 
 public func -<T, S: Sequence> (lhs: OrderedSet<T>, rhs: S) -> OrderedSet<T> where S.Iterator.Element == T {
-	let purgedSet = lhs
+	let purgedSet = OrderedSet(sequence: lhs)
 	purgedSet.remove(rhs)
 
 	return purgedSet
