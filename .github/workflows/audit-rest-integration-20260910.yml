@@ -1,0 +1,76 @@
+name: Remaining PR Integration 20260910
+on:
+  push:
+    branches: [audit/pr-integration-20260909]
+    paths: [.github/workflows/audit-rest-integration-20260910.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-22.04
+            container: swift:6.1-jammy
+          - name: macos
+            os: macos-15
+            container: ''
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 40
+    env:
+      BASE: 191a66f542ee6d70e95da3888894f9ea27511b79
+      PR36: 0814f7874384c9ebb79e2d808059ec7c08962b9d
+      PR37: e591fdc24b2e431eb7d05d3645f0f6029e2bb7d8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compose and qualify both exact integrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name 'Read-only integration audit'
+          git config user.email 'audit@users.noreply.github.com'
+          E="$RUNNER_TEMP/evidence"
+          mkdir -p "$E"
+          swift --version | tee "$E/swift-version.txt"
+          git checkout --detach "$PR36"
+          git merge --no-ff --no-edit "$BASE"
+          for stage in pr36 pr37; do
+            if [ "$stage" = pr37 ]; then git merge --no-ff --no-edit "$PR37"; fi
+            D="$E/$stage"
+            mkdir -p "$D"
+            tree=$(git rev-parse 'HEAD^{tree}')
+            git rev-parse HEAD 'HEAD^{tree}' | tee "$D/identity.txt"
+            git show -s --format='%H %P' HEAD > "$D/parents.txt"
+            git ls-tree -r HEAD > "$D/tree.txt"
+            git diff --full-index --binary "$BASE" HEAD > "$D/from-master.patch"
+            git archive --format=tar HEAD > "$D/source.tar"
+            git diff --check "$BASE" HEAD
+            test -z "$(git status --porcelain)"
+            swift test -j 4 --scratch-path "$RUNNER_TEMP/build-$stage" 2>&1 | tee "$D/debug.log"
+            grep -F "Test Suite 'All tests' passed" "$D/debug.log"
+            grep -E 'Executed 1[2-9][0-9][0-9] tests, with 17 tests skipped and 0 failures' "$D/debug.log"
+            swift test -j 4 -c release --scratch-path "$RUNNER_TEMP/build-$stage" 2>&1 | tee "$D/release.log"
+            grep -F "Test Suite 'All tests' passed" "$D/release.log"
+            grep -E 'Executed 1[2-9][0-9][0-9] tests, with 17 tests skipped and 0 failures' "$D/release.log"
+            ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address --scratch-path "$RUNNER_TEMP/build-$stage-asan" 2>&1 | tee "$D/asan.log"
+            grep -F "Test Suite 'All tests' passed" "$D/asan.log"
+            grep -E 'Executed 1[2-9][0-9][0-9] tests, with 17 tests skipped and 0 failures' "$D/asan.log"
+            test "$(git rev-parse 'HEAD^{tree}')" = "$tree"
+            test -z "$(git status --porcelain)"
+            printf 'debug/release/AddressSanitizer passed; source unchanged; leak detection disabled\n' > "$D/acceptance.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: remaining-integration-${{ matrix.name }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 30
