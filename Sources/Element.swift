@@ -1258,7 +1258,21 @@ open class Element: Node {
      */
     public func firstElementSibling() -> Element? {
         // todo: should firstSibling() exclude this?
-        let siblings: Array<Element>? = parent()?.children().array()
+        let parent = parent()
+        if let parent {
+            let parentType = type(of: parent)
+            if parentType == Element.self || parentType == Document.self || parentType == FormElement.self {
+                var endpoint: Element?
+                for node in parent.childNodes {
+                    if let element = node as? Element {
+                        if let endpoint { return endpoint }
+                        endpoint = element
+                    }
+                }
+                return nil // Preserve the existing nil result for fewer than two elements.
+            }
+        }
+        let siblings: Array<Element>? = parent?.children().array()
         return (siblings != nil && siblings!.count > 1) ? siblings![0] : nil
     }
     
@@ -1298,7 +1312,21 @@ open class Element: Node {
      */
     @inline(__always)
     public func lastElementSibling() -> Element? {
-        let siblings: Array<Element>? = parent()?.children().array()
+        let parent = parent()
+        if let parent {
+            let parentType = type(of: parent)
+            if parentType == Element.self || parentType == Document.self || parentType == FormElement.self {
+                var endpoint: Element?
+                for node in parent.childNodes.reversed() {
+                    if let element = node as? Element {
+                        if let endpoint { return endpoint }
+                        endpoint = element
+                    }
+                }
+                return nil // Preserve the existing nil result for fewer than two elements.
+            }
+        }
+        let siblings: Array<Element>? = parent?.children().array()
         return (siblings != nil && siblings!.count > 1) ? siblings![siblings!.count - 1] : nil
     }
     
