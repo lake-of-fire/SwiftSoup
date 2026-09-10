@@ -51,6 +51,14 @@ extension Character {
     /// - returns: `true` if `self` normalized contains a single code unit that is a member of the supplied character set.
     func isMemberOfCharacterSet(_ set: CharacterSet) -> Bool {
 
+        // A single ASCII scalar is already canonically normalized. Do not use
+        // Character.asciiValue: it also maps the two-scalar CRLF Character to LF.
+        let scalars = unicodeScalars
+        if let scalar = scalars.first, scalar.value < 0x80,
+           scalars.index(after: scalars.startIndex) == scalars.endIndex {
+            return set.contains(scalar)
+        }
+
         let normalized = String(self).precomposedStringWithCanonicalMapping
         let unicodes = normalized.unicodeScalars
 
