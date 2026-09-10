@@ -1,0 +1,42 @@
+name: Deeper correctness exact-head qualification
+on:
+  push:
+    branches: [audit/deeper-correctness-active-20260910]
+    paths: [.github/workflows/deeper-correctness-exact-heads.yml]
+permissions:
+  contents: read
+jobs:
+  qualify:
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: operators
+            ref: 10e0e4da0ec2d35bb43d647e1feec59189bf4d3d
+            os: ubuntu-24.04
+          - name: operators
+            ref: 10e0e4da0ec2d35bb43d647e1feec59189bf4d3d
+            os: macos-15
+          - name: token
+            ref: d9b69b8de2e441889c194cb3d7b0b166aad56fbd
+            os: ubuntu-24.04
+          - name: token
+            ref: d9b69b8de2e441889c194cb3d7b0b166aad56fbd
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - name: Exact-head debug release and ASan
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD HEAD^{tree}
+          swift --version
+          swift test -j 4
+          swift test -j 4 -c release
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address
+          test -z "$(git status --porcelain --untracked-files=all)"
