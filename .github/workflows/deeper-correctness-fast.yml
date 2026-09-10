@@ -1,0 +1,137 @@
+name: Deeper correctness fast qualification
+on:
+  push:
+    branches: [audit/deeper-correctness-active-20260910]
+    paths: [.github/workflows/deeper-correctness-fast.yml]
+permissions:
+  contents: read
+jobs:
+  publish-operators:
+    runs-on: ubuntu-24.04
+    permissions: {contents: write}
+    outputs:
+      commit: ${{ steps.publish.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: 191a66f542ee6d70e95da3888894f9ea27511b79, fetch-depth: 0}
+      - id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > Tests/SwiftSoupTests/OrderedSetOperatorValueSemanticsTests.swift <<'SWIFT'
+          import XCTest
+          @testable import SwiftSoup
+          final class OrderedSetOperatorValueSemanticsTests: XCTestCase {
+              func testPlusDoesNotMutateLeftOperandAndReturnsIndependentContainer() {
+                  let lhs = OrderedSet(sequence: [1, 2]); let result = lhs + [2, 3]
+                  XCTAssertEqual(Array(lhs), [1, 2]); XCTAssertEqual(Array(result), [1, 2, 3]); XCTAssertFalse(lhs === result)
+                  result.append(4); XCTAssertEqual(Array(lhs), [1, 2]); XCTAssertEqual(Array(result), [1, 2, 3, 4])
+              }
+              func testMinusDoesNotMutateLeftOperandAndReturnsIndependentContainer() {
+                  let lhs = OrderedSet(sequence: [1, 2, 3]); let result = lhs - [2]
+                  XCTAssertEqual(Array(lhs), [1, 2, 3]); XCTAssertEqual(Array(result), [1, 3]); XCTAssertFalse(lhs === result)
+                  result.remove(1); XCTAssertEqual(Array(lhs), [1, 2, 3]); XCTAssertEqual(Array(result), [3])
+              }
+              func testEmptyRightHandSideStillProducesIndependentValue() {
+                  let lhs = OrderedSet(sequence: [1, 2]); let plus = lhs + [Int](); let minus = lhs - [Int]()
+                  XCTAssertFalse(lhs === plus); XCTAssertFalse(lhs === minus); plus.append(3); minus.remove(1)
+                  XCTAssertEqual(Array(lhs), [1, 2]); XCTAssertEqual(Array(plus), [1, 2, 3]); XCTAssertEqual(Array(minus), [2])
+              }
+              func testMutatingAssignmentOperatorsRemainMutating() {
+                  var plus = OrderedSet(sequence: [1, 2]); plus += [3]; XCTAssertEqual(Array(plus), [1, 2, 3])
+                  var minus = OrderedSet(sequence: [1, 2, 3]); minus -= [2]; XCTAssertEqual(Array(minus), [1, 3])
+              }
+          }
+          SWIFT
+          set +e; swift test -j 4 --filter OrderedSetOperatorValueSemanticsTests >/tmp/before.log 2>&1; rc=$?; set -e
+          test "$rc" -ne 0
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Sources/OrderedSet.swift'); s=p.read_text()
+          a='let joinedSet = lhs'; b='let joinedSet = OrderedSet<T>(sequence: lhs)'; assert s.count(a)==1; s=s.replace(a,b)
+          a='let purgedSet = lhs'; b='let purgedSet = OrderedSet<T>(sequence: lhs)'; assert s.count(a)==1; s=s.replace(a,b); p.write_text(s)
+          p=Path('CHANGELOG.md'); s=p.read_text(); s=s.replace('## Unreleased\n','## Unreleased\n* Make `OrderedSet` `+` and `-` return independent containers instead of mutating the left operand; `+=` and `-=` remain mutating.\n',1); p.write_text(s)
+          PY
+          swift test -j 4 --filter OrderedSetOperatorValueSemanticsTests
+          git diff --check
+          git config user.name 'OpenAI assistant'; git config user.email noreply@openai.com
+          git add Sources/OrderedSet.swift Tests/SwiftSoupTests/OrderedSetOperatorValueSemanticsTests.swift CHANGELOG.md
+          git commit -m 'Make OrderedSet plus and minus nonmutating'
+          git push origin HEAD:refs/heads/fix/ordered-set-nonmutating-operators-20260910
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  verify-operators:
+    needs: publish-operators
+    strategy: {fail-fast: false, matrix: {mode: [debug, release, asan]}}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ needs.publish-operators.outputs.commit }}", persist-credentials: false}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          case '${{ matrix.mode }}' in
+            debug) swift test -j 4 ;;
+            release) swift test -j 4 -c release ;;
+            asan) ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address ;;
+          esac
+          test -z "$(git status --porcelain --untracked-files=all)"
+  publish-token:
+    runs-on: ubuntu-24.04
+    permissions: {contents: write}
+    outputs:
+      commit: ${{ steps.publish.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: 191a66f542ee6d70e95da3888894f9ea27511b79, fetch-depth: 0}
+      - id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > Tests/SwiftSoupTests/TokenQueueEmptyIgnoreCaseDelimiterTests.swift <<'SWIFT'
+          import XCTest
+          @testable import SwiftSoup
+          final class TokenQueueEmptyIgnoreCaseDelimiterTests: XCTestCase {
+              func testConsumeToIgnoreCaseEmptyDelimiterIsNoOp() {
+                  let q=TokenQueue("AbC"); XCTAssertEqual(q.consumeToIgnoreCase(""), ""); XCTAssertEqual(q.remainder(), "AbC")
+              }
+              func testChompToIgnoreCaseEmptyDelimiterIsNoOp() {
+                  let q=TokenQueue("AbC"); XCTAssertEqual(q.chompToIgnoreCase(""), ""); XCTAssertEqual(q.remainder(), "AbC")
+              }
+              func testEmptyDelimiterAfterPartialConsumptionPreservesRemainder() {
+                  let q=TokenQueue("AbC"); XCTAssertEqual(q.consume(), "A"); XCTAssertEqual(q.consumeToIgnoreCase(""), ""); XCTAssertEqual(q.remainder(), "bC")
+              }
+              func testNonemptyIgnoreCaseBehaviorIsUnchanged() {
+                  let q=TokenQueue("xxAbCyy"); XCTAssertEqual(q.consumeToIgnoreCase("aBc"), "xx"); XCTAssertEqual(q.chompToIgnoreCase("aBc"), ""); XCTAssertEqual(q.remainder(), "yy")
+              }
+          }
+          SWIFT
+          set +e; swift test -j 4 --filter TokenQueueEmptyIgnoreCaseDelimiterTests >/tmp/before.log 2>&1; rc=$?; set -e
+          test "$rc" -ne 0
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Sources/TokenQueue.swift'); s=p.read_text(); old='    open func consumeToIgnoreCase(_ seq: String) -> String {\n        let start = pos'; new='    open func consumeToIgnoreCase(_ seq: String) -> String {\n        guard !seq.isEmpty else { return "" }\n        let start = pos'; assert s.count(old)==1; p.write_text(s.replace(old,new))
+          p=Path('CHANGELOG.md'); s=p.read_text(); s=s.replace('## Unreleased\n','## Unreleased\n* Treat empty delimiters as no-ops in `TokenQueue.consumeToIgnoreCase` and `chompToIgnoreCase`, instead of trapping while slicing an empty string.\n',1); p.write_text(s)
+          PY
+          swift test -j 4 --filter TokenQueueEmptyIgnoreCaseDelimiterTests
+          git diff --check
+          git config user.name 'OpenAI assistant'; git config user.email noreply@openai.com
+          git add Sources/TokenQueue.swift Tests/SwiftSoupTests/TokenQueueEmptyIgnoreCaseDelimiterTests.swift CHANGELOG.md
+          git commit -m 'Handle empty ignore-case TokenQueue delimiters'
+          git push origin HEAD:refs/heads/fix/tokenqueue-empty-ignore-case-20260910
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  verify-token:
+    needs: publish-token
+    strategy: {fail-fast: false, matrix: {mode: [debug, release, asan]}}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ needs.publish-token.outputs.commit }}", persist-credentials: false}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          case '${{ matrix.mode }}' in
+            debug) swift test -j 4 ;;
+            release) swift test -j 4 -c release ;;
+            asan) ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address ;;
+          esac
+          test -z "$(git status --porcelain --untracked-files=all)"
