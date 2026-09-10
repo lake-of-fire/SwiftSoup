@@ -210,6 +210,7 @@ open class TokenQueue {
     }
 
     open func consumeToIgnoreCase(_ seq: String) -> String {
+        guard !seq.isEmpty else { return "" }
         let start = pos
         let first = seq.substring(0, 1)
         let canScan = first.lowercased() == first.uppercased() // if first is not cased, use index of
