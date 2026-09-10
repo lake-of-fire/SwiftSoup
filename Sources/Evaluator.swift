@@ -751,7 +751,19 @@ open class Evaluator: @unchecked Sendable {
     public final class IsOnlyChild: Evaluator, @unchecked Sendable {
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             let p = element.parent()
-            return p != nil && !((p as? Document) != nil) && element.siblingElements().isEmpty()
+            guard let p, !(p is Document) else { return false }
+            let elementType = type(of: element)
+            let parentType = type(of: p)
+            if (elementType == Element.self || elementType == Document.self || elementType == FormElement.self),
+               (parentType == Element.self || parentType == FormElement.self) {
+                // Only existence matters. Built-in parent/children views have no
+                // callbacks, so no sibling result array needs to be constructed.
+                for node in p.childNodes {
+                    if let sibling = node as? Element, sibling != element { return false }
+                }
+                return true
+            }
+            return element.siblingElements().isEmpty()
         }
         public override func toString() -> String {
             return ":only-child"
