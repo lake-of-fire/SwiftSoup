@@ -1,0 +1,169 @@
+name: Deeper correctness follow-up
+on:
+  push:
+    branches: [audit/deeper-correctness-active-20260910]
+    paths: [.github/workflows/deeper-correctness-followup.yml]
+permissions:
+  contents: write
+jobs:
+  operators:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 191a66f542ee6d70e95da3888894f9ea27511b79
+          fetch-depth: 0
+      - name: Reproduce, fix, test, and publish nonmutating operators
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > Tests/SwiftSoupTests/OrderedSetOperatorValueSemanticsTests.swift <<'SWIFT'
+          import XCTest
+          @testable import SwiftSoup
+
+          final class OrderedSetOperatorValueSemanticsTests: XCTestCase {
+              func testPlusDoesNotMutateLeftOperandAndReturnsIndependentContainer() {
+                  let lhs = OrderedSet(sequence: [1, 2])
+                  let result = lhs + [2, 3]
+                  XCTAssertEqual(Array(lhs), [1, 2])
+                  XCTAssertEqual(Array(result), [1, 2, 3])
+                  XCTAssertFalse(lhs === result)
+                  result.append(4)
+                  XCTAssertEqual(Array(lhs), [1, 2])
+                  XCTAssertEqual(Array(result), [1, 2, 3, 4])
+              }
+
+              func testMinusDoesNotMutateLeftOperandAndReturnsIndependentContainer() {
+                  let lhs = OrderedSet(sequence: [1, 2, 3])
+                  let result = lhs - [2]
+                  XCTAssertEqual(Array(lhs), [1, 2, 3])
+                  XCTAssertEqual(Array(result), [1, 3])
+                  XCTAssertFalse(lhs === result)
+                  result.remove(1)
+                  XCTAssertEqual(Array(lhs), [1, 2, 3])
+                  XCTAssertEqual(Array(result), [3])
+              }
+
+              func testEmptyRightHandSideStillProducesIndependentValue() {
+                  let lhs = OrderedSet(sequence: [1, 2])
+                  let plus = lhs + [Int]()
+                  let minus = lhs - [Int]()
+                  XCTAssertFalse(lhs === plus)
+                  XCTAssertFalse(lhs === minus)
+                  plus.append(3)
+                  minus.remove(1)
+                  XCTAssertEqual(Array(lhs), [1, 2])
+                  XCTAssertEqual(Array(plus), [1, 2, 3])
+                  XCTAssertEqual(Array(minus), [2])
+              }
+
+              func testMutatingAssignmentOperatorsRemainMutating() {
+                  var plus = OrderedSet(sequence: [1, 2])
+                  plus += [3]
+                  XCTAssertEqual(Array(plus), [1, 2, 3])
+                  var minus = OrderedSet(sequence: [1, 2, 3])
+                  minus -= [2]
+                  XCTAssertEqual(Array(minus), [1, 3])
+              }
+          }
+          SWIFT
+          set +e
+          swift test -j 4 --filter OrderedSetOperatorValueSemanticsTests > /tmp/operators-before.log 2>&1
+          before=$?
+          set -e
+          test "$before" -ne 0
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Sources/OrderedSet.swift')
+          s = p.read_text()
+          s = s.replace('''public func +<T, S: Sequence> (lhs: OrderedSet<T>, rhs: S) -> OrderedSet<T> where S.Iterator.Element == T {\n\tlet joinedSet = lhs\n\tjoinedSet.append(contentsOf: rhs)\n\n\treturn joinedSet\n}''','''public func +<T, S: Sequence> (lhs: OrderedSet<T>, rhs: S) -> OrderedSet<T> where S.Iterator.Element == T {\n\tlet joinedSet = OrderedSet<T>(sequence: lhs)\n\tjoinedSet.append(contentsOf: rhs)\n\n\treturn joinedSet\n}''')
+          s = s.replace('''public func -<T, S: Sequence> (lhs: OrderedSet<T>, rhs: S) -> OrderedSet<T> where S.Iterator.Element == T {\n\tlet purgedSet = lhs\n\tpurgedSet.remove(rhs)\n\n\treturn purgedSet\n}''','''public func -<T, S: Sequence> (lhs: OrderedSet<T>, rhs: S) -> OrderedSet<T> where S.Iterator.Element == T {\n\tlet purgedSet = OrderedSet<T>(sequence: lhs)\n\tpurgedSet.remove(rhs)\n\n\treturn purgedSet\n}''')
+          p.write_text(s)
+          p = Path('CHANGELOG.md')
+          s = p.read_text()
+          s = s.replace('## Unreleased\n', '## Unreleased\n* Make `OrderedSet` `+` and `-` nonmutating like ordinary value operators. They now return independent containers instead of mutating and returning the left operand; `+=` and `-=` remain mutating.\n', 1)
+          p.write_text(s)
+          PY
+          swift test -j 4 --filter OrderedSetOperatorValueSemanticsTests
+          swift test -j 4
+          swift test -j 4 -c release
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address
+          git diff --check
+          git config user.name 'OpenAI assistant'
+          git config user.email noreply@openai.com
+          git add Sources/OrderedSet.swift Tests/SwiftSoupTests/OrderedSetOperatorValueSemanticsTests.swift CHANGELOG.md
+          git commit -m 'Make OrderedSet plus and minus nonmutating'
+          git push origin HEAD:refs/heads/fix/ordered-set-nonmutating-operators-20260910
+
+  empty-ignore-case:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 191a66f542ee6d70e95da3888894f9ea27511b79
+          fetch-depth: 0
+      - name: Reproduce, fix, test, and publish empty ignore-case delimiter handling
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > Tests/SwiftSoupTests/TokenQueueEmptyIgnoreCaseDelimiterTests.swift <<'SWIFT'
+          import XCTest
+          @testable import SwiftSoup
+
+          final class TokenQueueEmptyIgnoreCaseDelimiterTests: XCTestCase {
+              func testConsumeToIgnoreCaseEmptyDelimiterIsNoOp() {
+                  let queue = TokenQueue("AbC")
+                  XCTAssertEqual(queue.consumeToIgnoreCase(""), "")
+                  XCTAssertEqual(queue.remainder(), "AbC")
+              }
+
+              func testChompToIgnoreCaseEmptyDelimiterIsNoOp() {
+                  let queue = TokenQueue("AbC")
+                  XCTAssertEqual(queue.chompToIgnoreCase(""), "")
+                  XCTAssertEqual(queue.remainder(), "AbC")
+              }
+
+              func testEmptyDelimiterAfterPartialConsumptionPreservesRemainder() {
+                  let queue = TokenQueue("AbC")
+                  XCTAssertEqual(queue.consume(), "A")
+                  XCTAssertEqual(queue.consumeToIgnoreCase(""), "")
+                  XCTAssertEqual(queue.remainder(), "bC")
+              }
+
+              func testNonemptyIgnoreCaseBehaviorIsUnchanged() {
+                  let queue = TokenQueue("xxAbCyy")
+                  XCTAssertEqual(queue.consumeToIgnoreCase("aBc"), "xx")
+                  XCTAssertEqual(queue.remainder(), "AbCyy")
+                  XCTAssertEqual(queue.chompToIgnoreCase("aBc"), "")
+                  XCTAssertEqual(queue.remainder(), "yy")
+              }
+          }
+          SWIFT
+          set +e
+          swift test -j 4 --filter TokenQueueEmptyIgnoreCaseDelimiterTests > /tmp/token-before.log 2>&1
+          before=$?
+          set -e
+          test "$before" -ne 0
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Sources/TokenQueue.swift')
+          s = p.read_text()
+          old = '''    open func consumeToIgnoreCase(_ seq: String) -> String {\n        let start = pos\n        let first = seq.substring(0, 1)'''
+          new = '''    open func consumeToIgnoreCase(_ seq: String) -> String {\n        guard !seq.isEmpty else { return "" }\n        let start = pos\n        let first = seq.substring(0, 1)'''
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          p = Path('CHANGELOG.md')
+          s = p.read_text()
+          s = s.replace('## Unreleased\n', '## Unreleased\n* Treat an empty delimiter as a no-op in `TokenQueue.consumeToIgnoreCase` and `chompToIgnoreCase`, matching the existing empty case-sensitive delimiter behavior instead of trapping while slicing the empty string.\n', 1)
+          p.write_text(s)
+          PY
+          swift test -j 4 --filter TokenQueueEmptyIgnoreCaseDelimiterTests
+          swift test -j 4
+          swift test -j 4 -c release
+          ASAN_OPTIONS=detect_leaks=0 swift test -j 4 --sanitize address
+          git diff --check
+          git config user.name 'OpenAI assistant'
+          git config user.email noreply@openai.com
+          git add Sources/TokenQueue.swift Tests/SwiftSoupTests/TokenQueueEmptyIgnoreCaseDelimiterTests.swift CHANGELOG.md
+          git commit -m 'Handle empty ignore-case TokenQueue delimiters'
+          git push origin HEAD:refs/heads/fix/tokenqueue-empty-ignore-case-20260910
