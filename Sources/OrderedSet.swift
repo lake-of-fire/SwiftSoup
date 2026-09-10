@@ -396,7 +396,7 @@ public struct OrderedSetGenerator<T: Hashable>: IteratorProtocol {
 extension OrderedSetGenerator where T: Comparable {}
 
 public func +<T, S: Sequence> (lhs: OrderedSet<T>, rhs: S) -> OrderedSet<T> where S.Iterator.Element == T {
-	let joinedSet = lhs
+	let joinedSet = OrderedSet<T>(sequence: lhs)
 	joinedSet.append(contentsOf: rhs)
 
 	return joinedSet
@@ -407,7 +407,7 @@ public func +=<T, S: Sequence> (lhs: inout OrderedSet<T>, rhs: S) where S.Iterat
 }
 
 public func -<T, S: Sequence> (lhs: OrderedSet<T>, rhs: S) -> OrderedSet<T> where S.Iterator.Element == T {
-	let purgedSet = lhs
+	let purgedSet = OrderedSet<T>(sequence: lhs)
 	purgedSet.remove(rhs)
 
 	return purgedSet
