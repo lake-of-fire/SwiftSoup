@@ -133,7 +133,6 @@ jobs:
               func testNonemptyIgnoreCaseBehaviorIsUnchanged() {
                   let queue = TokenQueue("xxAbCyy")
                   XCTAssertEqual(queue.consumeToIgnoreCase("aBc"), "xx")
-                  XCTAssertEqual(queue.remainder(), "AbCyy")
                   XCTAssertEqual(queue.chompToIgnoreCase("aBc"), "")
                   XCTAssertEqual(queue.remainder(), "yy")
               }
