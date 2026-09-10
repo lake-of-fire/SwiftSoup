@@ -216,6 +216,11 @@ open class TextNode: Node {
      */
     @inline(__always)
     open func isBlank() -> Bool {
+        if type(of: self) == TextNode.self {
+            // Keep the authoritative byte getter and its materialization behavior,
+            // but do not decode the whole value merely to test for ASCII whitespace.
+            return StringUtil.isBlankTextBytes(getWholeTextUTF8())
+        }
         return StringUtil.isBlank(getWholeText())
     }
 
