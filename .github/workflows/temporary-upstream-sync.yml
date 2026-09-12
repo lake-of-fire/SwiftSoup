@@ -1,0 +1,35 @@
+name: Temporary SwiftSoup upstream sync
+
+on:
+  push:
+    branches:
+      - codex/swiftsoup-upstream-sync-20260912
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-test:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge current upstream as canonical conflict side
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name upstream-sync-bot
+          git config user.email upstream-sync-bot@example.invalid
+          git remote add upstream https://github.com/scinfu/SwiftSoup.git || true
+          git fetch upstream 6778a6db3e1dc95a33fb16918c79221ea2db9000
+          git checkout -B codex/swiftsoup-upstream-base-candidate-20260912 a197bd5620a062f210686541dd38499c1913d342
+          git merge --no-ff -Xtheirs FETCH_HEAD -m 'Merge current upstream after accepted reconciliation stack'
+          git merge-base --is-ancestor a197bd5620a062f210686541dd38499c1913d342 HEAD
+          git merge-base --is-ancestor 6778a6db3e1dc95a33fb16918c79221ea2db9000 HEAD
+          git diff --stat 6778a6db3e1dc95a33fb16918c79221ea2db9000..HEAD
+      - name: Run package tests
+        run: swift test
+      - name: Publish only after tests pass
+        run: git push origin HEAD:refs/heads/codex/swiftsoup-upstream-base-candidate-20260912
