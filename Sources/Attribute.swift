@@ -8,6 +8,10 @@
 import Foundation
 
 open class Attribute {
+    // Installed only when a mutable reference escapes to a caller or is shared.
+    // Weak ownership preserves the lifetime of detached attributes and DOM trees.
+    internal var mutationOwners: [Weak<Attributes>]? = nil
+
     /// The element type of a dictionary: a tuple containing an individual
     /// key-value pair.
     static let booleanAttributes = ParsingStrings([
@@ -37,8 +41,8 @@ open class Attribute {
     var lowerTrimmedValueSliceCache: ByteSlice? = nil
     
     public init(key: [UInt8], value: [UInt8]) throws {
-        try Validate.notEmpty(string: key)
         let trimmedKey = ByteSlice.fromArray(key).trim()
+        try Validate.notEmpty(string: trimmedKey)
         self.keySlice = trimmedKey
         self.valueSlice = ByteSlice.fromArray(value)
     }
@@ -51,8 +55,9 @@ open class Attribute {
 
     @usableFromInline
     init(keySlice: ByteSlice, valueSlice: ByteSlice) throws {
-        try Validate.notEmpty(string: keySlice)
-        self.keySlice = keySlice.trim()
+        let trimmedKey = keySlice.trim()
+        try Validate.notEmpty(string: trimmedKey)
+        self.keySlice = trimmedKey
         self.valueSlice = valueSlice
     }
     
@@ -85,12 +90,21 @@ open class Attribute {
      */
     @inline(__always)
     open func setKey(key: [UInt8]) throws {
-        try Validate.notEmpty(string: key)
-        keySlice = ByteSlice.fromArray(key).trim()
+        let trimmedKey = ByteSlice.fromArray(key).trim()
+        try Validate.notEmpty(string: trimmedKey)
+        setNormalizedKey(trimmedKey)
+    }
+
+    // The caller validates or normalizes the key before entering this storage-only path.
+    // Normalization must not invoke an arbitrary subclass setter.
+    internal func setNormalizedKey(_ key: ByteSlice) {
+        guard keySlice != key else { return }
+        keySlice = key
         keyBytes = nil
         lowerKeySliceCache = nil
+        notifyMutationOwners(keyChanged: true)
     }
-    
+
     @inline(__always)
     open func setKey(key: String) throws {
         try setKey(key: key.utf8Array)
@@ -135,12 +149,16 @@ open class Attribute {
     @inline(__always)
     open func setValue(value: [UInt8]) -> [UInt8] {
         let old = getValueUTF8()
+        // An overridden getter can differ from the stored value. Only skip an
+        // actual storage no-op, while preserving the public getter's return value.
+        guard valueSliceMaterialized() != ByteSlice.fromArray(value) else { return old }
         valueSlice = ByteSlice.fromArray(value)
         valueSlices = nil
         valueSlicesCount = 0
         valueBytes = nil
         lowerValueSliceCache = nil
         lowerTrimmedValueSliceCache = nil
+        notifyMutationOwners(keyChanged: false)
         return old
     }
     
@@ -347,12 +365,13 @@ open class Attribute {
     @usableFromInline
     @inline(__always)
     func appendValueSlice(_ slice: ByteSlice) {
+        guard !slice.isEmpty else { return }
+        defer { notifyMutationOwners(keyChanged: false) }
         valueBytes = nil
         lowerValueSliceCache = nil
         lowerTrimmedValueSliceCache = nil
-        if var slices = valueSlices {
-            slices.append(slice)
-            valueSlices = slices
+        if valueSlices != nil {
+            valueSlices!.append(slice)
             valueSlicesCount += slice.count
             return
         }
@@ -402,20 +421,31 @@ open class Attribute {
     @inline(__always)
     public func hashCode() -> Int {
         var result = keySlice.hashValue
-        result = 31 * result + valueSliceMaterialized().hashValue
+        // Hash mixing intentionally wraps at the machine word boundary.
+        result = (31 &* result) &+ valueSliceMaterialized().hashValue
         return result
     }
     
+    // Copy immutable byte storage without sharing the mutable Attribute object or observers.
+    internal init(copying other: Attribute) {
+        keySlice = other.keySlice
+        valueSlice = other.valueSlice
+        valueSlices = other.valueSlices
+        valueSlicesCount = other.valueSlicesCount
+    }
+
     @inline(__always)
     public func clone() -> Attribute {
-        do {
-            return try Attribute(key: getKeyUTF8(), value: getValueUTF8())
-        } catch Exception.Error( _, let  msg) {
-            print(msg)
-        } catch {
-            
+        if type(of: self) == BooleanAttribute.self {
+            return BooleanAttribute(copying: self)
         }
-        return try! Attribute(key: [], value: [])
+        if type(of: self) != Attribute.self,
+           let projected = try? Attribute(key: getKeyUTF8(), value: getValueUTF8()) {
+            // Preserve the existing clone contract for custom getter overrides.
+            // Invalid projected keys fall back to the already-validated storage.
+            return projected
+        }
+        return Attribute(copying: self)
     }
 
 }
