@@ -1335,8 +1335,7 @@ open class Node: Equatable, Hashable {
     /// your program. Do not save hash values to use during a future execution.
     @inline(__always)
     public func hash(into hasher: inout Hasher) {
-        hasher.combine(description)
-        hasher.combine(baseUri)
+        hasher.combine(ObjectIdentifier(self))
     }
 }
 

@@ -2841,7 +2841,6 @@ open class Element: Node {
     
     override public func hash(into hasher: inout Hasher) {
         super.hash(into: &hasher)
-        hasher.combine(_tag)
     }
 }
 
