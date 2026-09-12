@@ -159,6 +159,13 @@ struct ByteSlice: RandomAccessCollection, Hashable, Sendable {
     func withUnsafeBufferPointer<R>(_ body: (UnsafeBufferPointer<UInt8>) throws -> R) rethrows -> R {
         return try withUnsafeBytes(body)
     }
+
+    /// All backing stores expose contiguous bytes for the duration of the closure.
+    @usableFromInline
+    @inline(__always)
+    func withContiguousStorageIfAvailable<R>(_ body: (UnsafeBufferPointer<UInt8>) throws -> R) rethrows -> R? {
+        return try withUnsafeBytes(body)
+    }
 }
 
 extension ByteSlice {
@@ -169,45 +176,37 @@ extension ByteSlice {
 
     @inline(__always)
     func lowercased() -> ByteSlice {
-        var needsLower = false
-        for b in self {
-            if b >= 65 && b <= 90 { needsLower = true; break }
-        }
-        if !needsLower { return self }
-        var out: [UInt8] = []
-        out.reserveCapacity(count)
-        for b in self {
-            if b >= 65 && b <= 90 {
-                out.append(b + 32)
-            } else {
-                out.append(b)
+        return withUnsafeBytes { bytes in
+            guard let firstUppercase = bytes.firstIndex(where: { $0 >= 65 && $0 <= 90 }) else {
+                return self
             }
+            var lowered = Array(bytes)
+            for index in firstUppercase..<lowered.count {
+                let byte = lowered[index]
+                if byte >= 65 && byte <= 90 {
+                    lowered[index] = byte + 32
+                }
+            }
+            return ByteSlice.fromArray(lowered)
         }
-        let storage = ByteStorage(array: out)
-        return ByteSlice(storage: storage, start: 0, end: out.count)
     }
 
     @inline(__always)
     func trim() -> ByteSlice {
-        @inline(__always)
-        func isWhitespace(_ byte: UInt8) -> Bool {
-            return byte == TokeniserStateVars.spaceByte ||
-                (byte >= TokeniserStateVars.tabByte && byte <= TokeniserStateVars.carriageReturnByte)
+        return withUnsafeBytes { bytes in
+            @inline(__always)
+            func isWhitespace(_ byte: UInt8) -> Bool {
+                return byte == TokeniserStateVars.spaceByte ||
+                    (byte >= TokeniserStateVars.tabByte && byte <= TokeniserStateVars.carriageReturnByte)
+            }
+            var lower = 0
+            var upper = bytes.count
+            while lower < upper, isWhitespace(bytes[lower]) { lower += 1 }
+            while lower < upper, isWhitespace(bytes[upper - 1]) { upper -= 1 }
+            return self[lower..<upper]
         }
-
-        var s = start
-        var e = end
-        var trimmed = false
-        while s < e, isWhitespace(storage.byte(at: s)) {
-            s &+= 1
-            trimmed = true
-        }
-        while s < e, isWhitespace(storage.byte(at: e - 1)) {
-            e &-= 1
-            trimmed = true
-        }
-        return trimmed ? ByteSlice(storage: storage, start: s, end: e) : self
     }
+
 }
 
 extension ByteSlice {
@@ -230,20 +229,22 @@ extension ByteSlice {
     @inline(__always)
     static func == (lhs: ByteSlice, rhs: ByteSlice) -> Bool {
         if lhs.count != rhs.count { return false }
-        var i = lhs.startIndex
-        while i < lhs.endIndex {
-            if lhs[i] != rhs[i] { return false }
-            i = lhs.index(after: i)
+        return lhs.withUnsafeBytes { left in
+            rhs.withUnsafeBytes { right in
+                for index in 0..<left.count {
+                    if left[index] != right[index] { return false }
+                }
+                return true
+            }
         }
-        return true
     }
 
     @usableFromInline
     @inline(__always)
     func hash(into hasher: inout Hasher) {
         hasher.combine(count)
-        for b in self {
-            hasher.combine(b)
+        withUnsafeBytes { bytes in
+            hasher.combine(bytes: UnsafeRawBufferPointer(bytes))
         }
     }
 }
