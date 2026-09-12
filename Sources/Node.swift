@@ -1,9 +1,11 @@
     @inline(__always)
     open func ownerDocument() -> Document? {
-        if let document = self as? Document {
-            return document
+        var current: Node? = self
+        while let node = current {
+            if let document = node as? Document { return document }
+            current = node.parentNode
         }
-        return parentNode?.ownerDocument()
+        return nil
     }
 
     /// A token that changes when text content in this node's tree mutates.
@@ -11,35 +13,24 @@
     @inline(__always)
     @usableFromInline
     internal func markSourceDirty(force: Bool = false) {
-        if sourceRangeDirty {
-            ownerDocument()?.registerDirtySourceRoot(self)
-            return
-        }
-        if !force, treeBuilder?.isBulkBuilding == true {
-            return
-        }
-        sourceRangeDirty = true
-        ownerDocument()?.registerDirtySourceRoot(self)
-        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
+        markSourceDirty(force: force, registerDirtyRoot: true)
     }
 
     @inline(__always)
     @usableFromInline
     internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
-        if sourceRangeDirty {
-            if registerDirtyRoot {
-                ownerDocument()?.registerDirtySourceRoot(self)
-            }
-            return
-        }
-        if !force, treeBuilder?.isBulkBuilding == true {
-            return
-        }
-        sourceRangeDirty = true
+        if !sourceRangeDirty, !force, treeBuilder?.isBulkBuilding == true { return }
         if registerDirtyRoot {
+            sourceRangeDirty = true
             ownerDocument()?.registerDirtySourceRoot(self)
         }
-        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
+        var current: Node? = registerDirtyRoot ? parentNode : self
+        while let node = current {
+            if node.sourceRangeDirty { break }
+            if !force, node.treeBuilder?.isBulkBuilding == true { break }
+            node.sourceRangeDirty = true
+            current = node.parentNode
+        }
     }
 
     @inline(__always)
@@ -59,16 +50,7 @@
         else {
             return nil
         }
-        let syntax = out.syntax()
-        if syntax == .xml && !doc.parsedAsXml {
-            return nil
-        }
-        if syntax == .html || syntax == .xml {
-            // ok
-        } else {
-            return nil
-        }
-        if range.end > source.count {
+        if !out.canReuseSource(parsedAsXml: doc.parsedAsXml) || range.end > source.count {
             return nil
         }
         return source[range.start..<range.end]
@@ -89,17 +71,35 @@
 
     @inline(__always)
     internal func outerHtmlFast(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings, allowRawSource: Bool) throws {
-        if let raw = rawSourceSlice(out, allowRawSource: allowRawSource) {
-            accum.append(raw)
-            return
-        }
-        try outerHtmlHead(accum, depth, out)
-        if !childNodes.isEmpty {
-            for child in childNodes {
-                try child.outerHtmlFast(accum, depth + 1, out, allowRawSource: allowRawSource)
+        // Walk head/children/tail without consuming a stack frame per element.
+        // A reused subtree is already complete and can advance straight to its
+        // sibling, while the ancestors still receive their closing tags.
+        var node: Node = self
+        var nodeDepth = depth
+        while true {
+            if let raw = node.rawSourceSlice(out, allowRawSource: allowRawSource) {
+                accum.append(raw)
+            } else {
+                try node.outerHtmlHead(accum, nodeDepth, out)
+                if let child = node.childNodes.first {
+                    node = child
+                    nodeDepth += 1
+                    continue
+                }
+                try node.outerHtmlTail(accum, nodeDepth, out)
             }
+            while node !== self {
+                if let sibling = node.nextSibling() {
+                    node = sibling
+                    break
+                }
+                guard let parent = node.parentNode else { return }
+                node = parent
+                nodeDepth -= 1
+                try node.outerHtmlTail(accum, nodeDepth, out)
+            }
+            if node === self { return }
         }
-        try outerHtmlTail(accum, depth, out)
     }
 
     @inline(__always)
@@ -108,11 +108,5 @@
         _ depth: Int,
         _ out: OutputSettings
     ) throws {
-        try outerHtmlHead(accum, depth, out)
-        if !childNodes.isEmpty {
-            for child in childNodes {
-                try child.outerHtmlFastWithoutSourceReuse(accum, depth + 1, out)
-            }
-        }
-        try outerHtmlTail(accum, depth, out)
+        try outerHtmlFast(accum, depth, out, allowRawSource: false)
     }
