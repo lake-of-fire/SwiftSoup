@@ -94,7 +94,7 @@ open class Attribute {
         try Validate.notEmpty(string: trimmedKey)
         setNormalizedKey(trimmedKey)
     }
-    
+
     // The caller validates or normalizes the key before entering this storage-only path.
     // Normalization must not invoke an arbitrary subclass setter.
     internal func setNormalizedKey(_ key: ByteSlice) {
