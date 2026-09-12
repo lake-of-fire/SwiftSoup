@@ -1100,7 +1100,7 @@ open class CssSelector {
     /// Fast‑path for simple selectors that map directly onto indexed queries.
     /// Avoids full DOM traversal when the evaluator is a single primitive selector.
     private static func fastSelect(_ evaluator: Evaluator, _ root: Element) throws -> Elements? {
-        if let eval = evaluator as? Evaluator.Tag {
+        if let eval = evaluator as? Evaluator.Tag, type(of: eval) == Evaluator.Tag.self {
             return try root.getElementsByTag(eval.tagNameNormal)
         }
         if let eval = evaluator as? Evaluator.Id {
@@ -1159,7 +1159,8 @@ open class CssSelector {
                 if sub === skipEval {
                     continue
                 }
-                if try !sub.matches(root, element) {
+                // Preserve And.matches catch-and-continue behavior.
+                if (try? sub.matches(root, element)) == false {
                     matchesAll = false
                     break
                 }
@@ -1197,7 +1198,7 @@ open class CssSelector {
         if let eval = evaluator as? Evaluator.Attribute {
             return IndexedCandidate(elements: root.getElementsByAttributeNormalized(eval.keyBytes), priority: 3, evaluator: evaluator)
         }
-        if let eval = evaluator as? Evaluator.Tag {
+        if let eval = evaluator as? Evaluator.Tag, type(of: eval) == Evaluator.Tag.self {
             return IndexedCandidate(elements: try root.getElementsByTag(eval.tagNameNormal), priority: 4, evaluator: evaluator)
         }
         return nil

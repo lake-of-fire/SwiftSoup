@@ -43,6 +43,7 @@ open class Collector {
             return elements
         }
         if let hasEval = eval as? StructuralEvaluator.Has,
+           type(of: hasEval) == StructuralEvaluator.Has.self,
            isRootIndependent(hasEval.evaluator) {
             return try collectHas(hasEval, root: root)
         }
@@ -59,7 +60,8 @@ open class Collector {
                 var matchesAll = true
                 for (idx, evaluator) in evaluators.enumerated() {
                     if idx == satisfiedIndex { continue }
-                    if try !evaluator.matches(root, el) {
+                    // Preserve And.matches catch-and-continue behavior.
+                    if (try? evaluator.matches(root, el)) == false {
                         matchesAll = false
                         break
                     }
@@ -153,7 +155,7 @@ open class Collector {
         if let idEval = eval as? Evaluator.Id {
             return root.getElementsById(idEval.idBytes)
         }
-        if let tagEval = eval as? Evaluator.Tag {
+        if let tagEval = eval as? Evaluator.Tag, type(of: tagEval) == Evaluator.Tag.self {
             return try root.getElementsByTagNormalized(tagEval.tagNameNormal)
         }
         if let classEval = eval as? Evaluator.Class {
@@ -180,7 +182,7 @@ open class Collector {
                 attrValueEval.value
             )
         }
-        if eval is StructuralEvaluator.Root {
+        if type(of: eval) == StructuralEvaluator.Root.self {
             return Elements([root])
         }
         return nil
@@ -229,7 +231,7 @@ open class Collector {
         }
 
         for (idx, evaluator) in evaluators.enumerated() {
-            if let tagEval = evaluator as? Evaluator.Tag {
+            if let tagEval = evaluator as? Evaluator.Tag, type(of: tagEval) == Evaluator.Tag.self {
                 return (try root.getElementsByTagNormalized(tagEval.tagNameNormal),
                         idx)
             }
@@ -253,7 +255,10 @@ open class Collector {
             if evaluator is Evaluator.AttributeWithValueNot {
                 continue
             }
-            if let attrKeyPairEval = evaluator as? Evaluator.AttributeKeyPair {
+            if (evaluator is Evaluator.AttributeWithValueStarting ||
+                evaluator is Evaluator.AttributeWithValueEnding ||
+                evaluator is Evaluator.AttributeWithValueContaining),
+               let attrKeyPairEval = evaluator as? Evaluator.AttributeKeyPair {
                 return (root.getElementsByAttributeNormalized(attrKeyPairEval.keyBytes), nil)
             }
         }

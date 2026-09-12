@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+* Isolate mutable parser-built OR evaluator graphs in the default query cache so editing a parsed selector cannot change later queries. Preserve established AND error handling in indexed selection and honor same-module evaluator overrides instead of substituting built-in index semantics.
 * Check `OrderedSet.isSubset(of:)` without restarting single-pass inputs. Such sequences no longer lose earlier matches or depend on hash iteration order; successful checks stop once all required members are found. Collections retain their specialized membership checks (including Set and Range), and singleton receivers need only one check without temporary membership storage. Empty receivers do not consume the input. Temporary membership storage for multi-member, non-Collection inputs is bounded by receiver size.
 * Preserve stored representatives in `OrderedSet.swapObject(_:with:)`, including canonically equivalent String bytes. Equal lookup arguments no longer replace or remain retained as members; swapping the same member is a no-op. Explicit equal-value replacement through `append` remains unchanged.
 * Decode paired text escapes correctly in `TokenQueue.unescape` and `:contains` / `:containsOwn` / `:containsData`. Runs of backslashes now quote one scalar at a time, including inside graphemes, rather than duplicating escapes. A lone trailing backslash is still dropped. Regex arguments and CSS hexadecimal identifier decoding remain separate and unchanged.
