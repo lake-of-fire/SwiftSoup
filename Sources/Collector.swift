@@ -42,35 +42,34 @@ open class Collector {
             }
             return elements
         }
-        if let hasEval = eval as? StructuralEvaluator.Has {
+        if let hasEval = eval as? StructuralEvaluator.Has,
+           type(of: hasEval) == StructuralEvaluator.Has.self,
+           !hasEval.searchesFollowingSiblings,
+           isRootIndependent(hasEval.evaluator) {
             return try collectHas(hasEval, root: root)
         }
         let elements: Elements = Elements()
         if let andEval = eval as? CombiningEvaluator.And,
            let seeded = try seedCandidates(for: andEval, root: root) {
-            let (seedElements, skipIndex) = seeded
-            if seedElements.isEmpty {
+            let (seedElements, satisfiedIndex) = seeded
+            let evaluators = andEval.evaluators
+            if seedElements.isEmpty || (evaluators.count == 1 && satisfiedIndex == 0) {
                 return seedElements
             }
             elements.reserveCapacity(seedElements.size())
-            if let skipIndex {
-                let evaluators = andEval.evaluators
-                for el in seedElements.array() {
-                    var matchesAll = true
-                    for (idx, evaluator) in evaluators.enumerated() {
-                        if idx == skipIndex { continue }
-                        let matched = try evaluator.matches(root, el)
-                        if !matched {
-                            matchesAll = false
-                            break
-                        }
-                    }
-                    if matchesAll {
-                        elements.add(el)
+            for el in seedElements.array() {
+                var matchesAll = true
+                for (idx, evaluator) in evaluators.enumerated() {
+                    if idx == satisfiedIndex { continue }
+                    // Preserve And.matches catch-and-continue behavior.
+                    if (try? evaluator.matches(root, el)) == false {
+                        matchesAll = false
+                        break
                     }
                 }
-            } else {
-                return seedElements
+                if matchesAll {
+                    elements.add(el)
+                }
             }
             return elements
         }
@@ -96,6 +95,22 @@ open class Collector {
             }
         }
         return elements
+    }
+
+    // Collect-once/mark-ancestors is valid only when the inner predicate does
+    // not depend on the candidate :has root. Relative or structural selectors
+    // must use Has.matches for each candidate instead.
+    private static func isRootIndependent(_ eval: Evaluator) -> Bool {
+        let type = type(of: eval)
+        if type == Evaluator.Tag.self || type == Evaluator.Id.self ||
+            type == Evaluator.Class.self || type == Evaluator.Attribute.self {
+            return true
+        }
+        if let combined = eval as? CombiningEvaluator,
+           combined is CombiningEvaluator.And || combined is CombiningEvaluator.Or {
+            return combined.evaluators.allSatisfy(isRootIndependent)
+        }
+        return false
     }
 
     private static func collectHas(_ hasEval: StructuralEvaluator.Has, root: Element) throws -> Elements {
@@ -141,7 +156,7 @@ open class Collector {
         if let idEval = eval as? Evaluator.Id {
             return root.getElementsById(idEval.idBytes)
         }
-        if let tagEval = eval as? Evaluator.Tag {
+        if let tagEval = eval as? Evaluator.Tag, type(of: tagEval) == Evaluator.Tag.self {
             return try root.getElementsByTagNormalized(tagEval.tagNameNormal)
         }
         if let classEval = eval as? Evaluator.Class {
@@ -168,7 +183,7 @@ open class Collector {
                 attrValueEval.value
             )
         }
-        if eval is StructuralEvaluator.Root {
+        if type(of: eval) == StructuralEvaluator.Root.self {
             return Elements([root])
         }
         return nil
@@ -177,14 +192,13 @@ open class Collector {
     private static func seedCandidates(for eval: CombiningEvaluator.And, root: Element) throws -> (Elements, Int?)? {
         let evaluators = eval.evaluators
 
-        @inline(__always)
-        func shouldSkipIndex(_ index: Int) -> Int? {
-            return evaluators.count > 1 ? index : nil
-        }
+        // An index may discharge only a predicate it fully proves. Attribute
+        // presence is merely a superset for value/regex predicates: nil means
+        // every predicate must still be evaluated on the seeded candidates.
 
         for (idx, evaluator) in evaluators.enumerated() {
             if let idEval = evaluator as? Evaluator.Id {
-                return (root.getElementsById(idEval.idBytes), shouldSkipIndex(idx))
+                return (root.getElementsById(idEval.idBytes), idx)
             }
         }
 
@@ -199,7 +213,7 @@ open class Collector {
                             attrValueEval.key,
                             attrValueEval.value
                         ),
-                        shouldSkipIndex(idx))
+                        idx)
             }
         }
 
@@ -213,38 +227,40 @@ open class Collector {
                     normalizedClass = classBytes.lowercased()
                 }
                 return (root.getElementsByClassNormalizedBytes(normalizedClass),
-                        shouldSkipIndex(idx))
+                        idx)
             }
         }
 
         for (idx, evaluator) in evaluators.enumerated() {
-            if let tagEval = evaluator as? Evaluator.Tag {
+            if let tagEval = evaluator as? Evaluator.Tag, type(of: tagEval) == Evaluator.Tag.self {
                 return (try root.getElementsByTagNormalized(tagEval.tagNameNormal),
-                        shouldSkipIndex(idx))
+                        idx)
             }
         }
 
         for (idx, evaluator) in evaluators.enumerated() {
             if let attrEval = evaluator as? Evaluator.Attribute {
                 return (root.getElementsByAttributeNormalized(attrEval.keyBytes),
-                        shouldSkipIndex(idx))
+                        idx)
             }
         }
 
-        for (idx, evaluator) in evaluators.enumerated() {
+        for evaluator in evaluators {
             if let attrMatchingEval = evaluator as? Evaluator.AttributeWithValueMatching {
-                return (root.getElementsByAttributeNormalized(attrMatchingEval.key.utf8Array),
-                        shouldSkipIndex(idx))
+                let keyBytes = attrMatchingEval.key.utf8Array
+                return (root.getElementsByAttributeNormalized(keyBytes), nil)
             }
         }
 
-        for (idx, evaluator) in evaluators.enumerated() {
+        for evaluator in evaluators {
             if evaluator is Evaluator.AttributeWithValueNot {
                 continue
             }
-            if let attrKeyPairEval = evaluator as? Evaluator.AttributeKeyPair {
-                return (root.getElementsByAttributeNormalized(attrKeyPairEval.keyBytes),
-                        shouldSkipIndex(idx))
+            if (evaluator is Evaluator.AttributeWithValueStarting ||
+                evaluator is Evaluator.AttributeWithValueEnding ||
+                evaluator is Evaluator.AttributeWithValueContaining),
+               let attrKeyPairEval = evaluator as? Evaluator.AttributeKeyPair {
+                return (root.getElementsByAttributeNormalized(attrKeyPairEval.keyBytes), nil)
             }
         }
 

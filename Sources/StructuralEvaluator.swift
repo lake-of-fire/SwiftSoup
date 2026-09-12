@@ -24,23 +24,42 @@ public class StructuralEvaluator: Evaluator, @unchecked Sendable {
     }
 
     public class Has: StructuralEvaluator, @unchecked Sendable {
+        /// Whether matching this relative selector may leave the candidate's
+        /// descendant subtree through a leading sibling combinator.
+        let searchesFollowingSiblings: Bool
+
         public override init(_ evaluator: Evaluator) {
+            self.searchesFollowingSiblings = false
+            super.init(evaluator)
+        }
+
+        init(_ evaluator: Evaluator, followingSiblings: Bool) {
+            self.searchesFollowingSiblings = followingSiblings
             super.init(evaluator)
         }
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             var stack: [Element] = []
-            let children = element.childNodes
-            if !children.isEmpty {
-                for child in children.reversed() {
-                    if let childEl = child as? Element {
-                        stack.append(childEl)
+            if searchesFollowingSiblings {
+                var sibling = try element.nextElementSibling()
+                while let current = sibling {
+                    stack.append(current)
+                    sibling = try current.nextElementSibling()
+                }
+                stack.reverse()
+            } else {
+                let children = element.childNodes
+                if !children.isEmpty {
+                    for child in children.reversed() {
+                        if let childEl = child as? Element {
+                            stack.append(childEl)
+                        }
                     }
                 }
             }
             while let current = stack.popLast() {
                 do {
-                    if try evaluator.matches(root, current) {
+                    if try evaluator.matches(element, current) {
                         return true
                     }
                 } catch {}
@@ -89,17 +108,17 @@ public class StructuralEvaluator: Evaluator, @unchecked Sendable {
             }
 
             var parent = element.parent()
-            while (true) {
+            while let current = parent {
                 do {
-                    if let p = parent, try evaluator.matches(root, p) {
+                    if try evaluator.matches(root, current) {
                         return true
                     }
                 } catch {}
 
-                if (parent == root) {
+                if current == root {
                     break
                 }
-                parent = parent?.parent()
+                parent = current.parent()
             }
             return false
         }

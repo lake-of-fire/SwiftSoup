@@ -72,6 +72,17 @@ final class AttributeOwnershipTest: XCTestCase {
         for p in [a, b] { try assertMatches(p, ".new", []) }
     }
 
+    func testDirectValueMutationInvalidatesDynamicAttributeIndex() throws {
+        let doc = try SwiftSoup.parse("<p data-custom='before'></p>")
+        let p = try XCTUnwrap(doc.select("p").first())
+        try assertMatches(doc, "[data-custom=before]", [p])
+        let a = try attribute(p.getAttributes()!, "data-custom")
+        a.setValue(value: [])
+        try assertMatches(doc, "[data-custom=before]", [])
+        try assertMatches(doc, "[data-custom='']", [p])
+        try assertMatches(doc, "[data-custom~=^$]", [p])
+    }
+
     func testRenameInvalidatesBothKeyIndexes() throws {
         let attrs = Attributes()
         for i in 0..<12 { try attrs.put("k\(i)", "v\(i)") }

@@ -244,7 +244,6 @@ open class Evaluator: @unchecked Sendable {
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             if let slice = element.attrSlice(keyBytes) {
-                if slice.isEmpty { return false }
                 let needsTrim = (slice.first?.isWhitespace ?? false) || (slice.last?.isWhitespace ?? false)
                 let candidate = needsTrim ? slice.trim() : slice
                 return StringUtil.equalsIgnoreCase(valueBytes, candidate)
@@ -275,7 +274,6 @@ open class Evaluator: @unchecked Sendable {
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             if let slice = element.attrSlice(keyBytes) {
-                if slice.isEmpty { return true }
                 return !StringUtil.equalsIgnoreCase(valueBytes, slice)
             }
             if !Element.isAbsAttributeKey(keyBytes) {
@@ -301,6 +299,8 @@ open class Evaluator: @unchecked Sendable {
         }
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
+            // CSS substring selectors with an empty operand match nothing.
+            guard !valueBytes.isEmpty else { return false }
             if let slice = element.attrSlice(keyBytes) {
                 if slice.isEmpty { return false }
                 if StringUtil.isAscii(slice),
@@ -337,6 +337,8 @@ open class Evaluator: @unchecked Sendable {
         }
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
+            // CSS substring selectors with an empty operand match nothing.
+            guard !valueBytes.isEmpty else { return false }
             if let slice = element.attrSlice(keyBytes) {
                 if slice.isEmpty { return false }
                 if StringUtil.isAscii(slice),
@@ -373,6 +375,8 @@ open class Evaluator: @unchecked Sendable {
         }
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
+            // CSS substring selectors with an empty operand match nothing.
+            guard !valueBytes.isEmpty else { return false }
             if let slice = element.attrSlice(keyBytes) {
                 if slice.isEmpty { return false }
                 if StringUtil.isAscii(slice),
@@ -417,7 +421,6 @@ open class Evaluator: @unchecked Sendable {
 
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             if let slice = element.attrSlice(keyBytes) {
-                if slice.isEmpty { return false }
                 let string = slice.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
                 return pattern.matcher(in: string).find()
             }
@@ -584,19 +587,30 @@ open class Evaluator: @unchecked Sendable {
             if (p == nil || (((p as? Document) != nil))) {return false}
 
             let pos: Int = try calculatePosition(root, element)
-            if (a == 0) {return pos == b}
+            guard pos > 0 else { return false }
+            if a == 0 { return pos == b }
 
-            return (pos-b)*a >= 0 && (pos-b)%a==0
+            // Direction proves n >= 0 without multiplying signed integers.
+            // The unsigned difference represents the full Int-to-Int distance,
+            // even when signed subtraction would overflow. magnitude handles
+            // Int.min without trying to negate it in signed arithmetic.
+            let distance: UInt
+            if a > 0 {
+                guard pos >= b else { return false }
+                distance = UInt(bitPattern: pos) &- UInt(bitPattern: b)
+            } else {
+                guard pos <= b else { return false }
+                distance = UInt(bitPattern: b) &- UInt(bitPattern: pos)
+            }
+            return distance % a.magnitude == 0
         }
 
         open override func toString() -> String {
             if (a == 0) {
                 return ":\(getPseudoClass())(\(b))"
             }
-            if (b == 0) {
-                return ":\(getPseudoClass())(\(a))"
-            }
-            return ":\(getPseudoClass())(\(a)\(b))"
+            let offset = b == 0 ? "" : (b > 0 ? "+\(b)" : "\(b)")
+            return ":\(getPseudoClass())(\(a)n\(offset))"
         }
 
         open func getPseudoClass() -> String {
@@ -737,7 +751,19 @@ open class Evaluator: @unchecked Sendable {
     public final class IsOnlyChild: Evaluator, @unchecked Sendable {
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
             let p = element.parent()
-            return p != nil && !((p as? Document) != nil) && element.siblingElements().isEmpty()
+            guard let p, !(p is Document) else { return false }
+            let elementType = type(of: element)
+            let parentType = type(of: p)
+            if (elementType == Element.self || elementType == Document.self || elementType == FormElement.self),
+               (parentType == Element.self || parentType == FormElement.self) {
+                // Only existence matters. Built-in parent/children views have no
+                // callbacks, so no sibling result array needs to be constructed.
+                for node in p.childNodes {
+                    if let sibling = node as? Element, sibling != element { return false }
+                }
+                return true
+            }
+            return element.siblingElements().isEmpty()
         }
         public override func toString() -> String {
             return ":only-child"
@@ -913,5 +939,33 @@ open class Evaluator: @unchecked Sendable {
         public override func toString() -> String {
             return ":matchesOwn(\(pattern.toString())"
         }
+    }
+}
+
+// Parser-built leaves are immutable. Copy only publicly mutable OR nodes and
+// the built-in wrappers leading to them before sharing evaluator graphs.
+internal extension Evaluator {
+    func isolatedCopyForCache() -> Evaluator {
+        if let disjunction = self as? CombiningEvaluator.Or {
+            return CombiningEvaluator.Or(disjunction.evaluators.map { $0.isolatedCopyForCache() })
+        }
+        if let conjunction = self as? CombiningEvaluator.And {
+            let children = conjunction.evaluators.map { $0.isolatedCopyForCache() }
+            if zip(children, conjunction.evaluators).allSatisfy({ $0 === $1 }) { return self }
+            return CombiningEvaluator.And(children)
+        }
+        guard let structural = self as? StructuralEvaluator else { return self }
+        let child = structural.evaluator.isolatedCopyForCache()
+        if child === structural.evaluator { return self }
+        if type(of: self) == StructuralEvaluator.Has.self {
+            let has = self as! StructuralEvaluator.Has
+            return StructuralEvaluator.Has(child, followingSiblings: has.searchesFollowingSiblings)
+        }
+        if type(of: self) == StructuralEvaluator.Not.self { return StructuralEvaluator.Not(child) }
+        if type(of: self) == StructuralEvaluator.Parent.self { return StructuralEvaluator.Parent(child) }
+        if type(of: self) == StructuralEvaluator.ImmediateParent.self { return StructuralEvaluator.ImmediateParent(child) }
+        if type(of: self) == StructuralEvaluator.PreviousSibling.self { return StructuralEvaluator.PreviousSibling(child) }
+        if type(of: self) == StructuralEvaluator.ImmediatePreviousSibling.self { return StructuralEvaluator.ImmediatePreviousSibling(child) }
+        return self
     }
 }
