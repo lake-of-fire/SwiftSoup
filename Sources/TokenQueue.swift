@@ -573,6 +573,55 @@ open class TokenQueue {
         return escaped
     }
 
+    /// Consume a comma-separated CSS selector list without splitting escapes,
+    /// quoted text, attribute selectors, or nested functional expressions.
+    internal func consumeCssSelectorList() -> [String] {
+        var branches: [String] = []
+        var branch = ""
+        var quote: UInt8?
+        while !isEmpty() {
+            let start = queue.index(queue.startIndex, offsetBy: pos)
+            let bytes = queue.utf8
+            let byte = bytes[start]
+            if byte == 0x5C { // backslash
+                branch += consumeCssEscapeSequence()
+            } else if let openQuote = quote {
+                let end = queue.unicodeScalars.index(after: start)
+                branch += String(decoding: bytes[start..<end], as: UTF8.self)
+                advanceCssPosition(from: start, to: end)
+                if byte == openQuote { quote = nil }
+            } else if byte == 0x22 || byte == 0x27 { // double or single quote
+                quote = byte
+                let end = queue.unicodeScalars.index(after: start)
+                branch += String(decoding: bytes[start..<end], as: UTF8.self)
+                advanceCssPosition(from: start, to: end)
+            } else if byte == 0x28 || byte == 0x5B { // ( or [
+                let open: Character = byte == 0x28 ? "(" : "["
+                let close: Character = byte == 0x28 ? ")" : "]"
+                branch += chompBalanced(open, close, preservingDelimiters: true)
+            } else if byte == 0x2C { // comma
+                branches.append(branch)
+                branch = ""
+                let end = bytes.index(after: start)
+                advanceCssPosition(from: start, to: end)
+            } else {
+                // Advance ordinary runs together instead of repeatedly resolving
+                // a Character offset for every scalar in a long selector.
+                var end = bytes.index(after: start)
+                while end < bytes.endIndex {
+                    let next = bytes[end]
+                    if next == 0x5C || next == 0x22 || next == 0x27 ||
+                        next == 0x28 || next == 0x5B || next == 0x2C { break }
+                    bytes.formIndex(after: &end)
+                }
+                branch += String(decoding: bytes[start..<end], as: UTF8.self)
+                advanceCssPosition(from: start, to: end)
+            }
+        }
+        branches.append(branch)
+        return branches
+    }
+
     /// A nil scalar means a non-hex escape: retain its literal contents after the backslash.
     private func cssEscape(at start: String.Index) -> (end: String.Index, scalar: UnicodeScalar?) {
         let bytes = queue.utf8

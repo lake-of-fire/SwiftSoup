@@ -957,7 +957,10 @@ internal extension Evaluator {
         guard let structural = self as? StructuralEvaluator else { return self }
         let child = structural.evaluator.isolatedCopyForCache()
         if child === structural.evaluator { return self }
-        if type(of: self) == StructuralEvaluator.Has.self { return StructuralEvaluator.Has(child) }
+        if type(of: self) == StructuralEvaluator.Has.self {
+            let has = self as! StructuralEvaluator.Has
+            return StructuralEvaluator.Has(child, followingSiblings: has.searchesFollowingSiblings)
+        }
         if type(of: self) == StructuralEvaluator.Not.self { return StructuralEvaluator.Not(child) }
         if type(of: self) == StructuralEvaluator.Parent.self { return StructuralEvaluator.Parent(child) }
         if type(of: self) == StructuralEvaluator.ImmediateParent.self { return StructuralEvaluator.ImmediateParent(child) }

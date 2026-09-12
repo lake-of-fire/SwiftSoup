@@ -44,6 +44,7 @@ open class Collector {
         }
         if let hasEval = eval as? StructuralEvaluator.Has,
            type(of: hasEval) == StructuralEvaluator.Has.self,
+           !hasEval.searchesFollowingSiblings,
            isRootIndependent(hasEval.evaluator) {
             return try collectHas(hasEval, root: root)
         }
