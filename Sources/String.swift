@@ -348,24 +348,22 @@ extension String {
         return self.hasPrefix(string)
     }
     
-	func indexOf(_ substring: String, _ offset: Int ) -> Int {
-        if(offset > count) {return -1}
-
-        let maxIndex = self.count - substring.count
-        if(maxIndex >= 0) {
-            for index in offset...maxIndex {
-                let rangeSubstring = self.index(self.startIndex, offsetBy: index)..<self.index(self.startIndex, offsetBy: index + substring.count)
-                #if swift(>=4)
-                let selfSubstring = self[rangeSubstring]
-                #else
-                let selfSubstring = self.substring(with: rangeSubstring)
-                #endif
-                if selfSubstring == substring {
-                    return index
-                }
-            }
+    func indexOf(_ substring: String, _ offset: Int) -> Int {
+        // Offsets and candidate windows remain Character-based. Advance the
+        // two bounds instead of rescanning from startIndex for every window.
+        guard offset >= 0,
+              var lower = index(startIndex, offsetBy: offset, limitedBy: endIndex),
+              var upper = index(lower, offsetBy: substring.count, limitedBy: endIndex) else {
+            return -1
         }
-        return -1
+        var position = offset
+        while true {
+            if self[lower..<upper] == substring { return position }
+            guard upper < endIndex else { return -1 }
+            formIndex(after: &lower)
+            formIndex(after: &upper)
+            position += 1
+        }
     }
 
     @inline(__always)
@@ -468,35 +466,37 @@ extension String {
         otherOffset: Int,
         targetLength: Int
     ) -> Bool {
-        if ((otherOffset < 0) || (selfOffset < 0)
-            || (selfOffset > self.count - targetLength)
-            || (otherOffset > other.count - targetLength)) {
+        guard selfOffset >= 0, otherOffset >= 0, targetLength >= 0,
+              var lhs = index(startIndex, offsetBy: selfOffset, limitedBy: endIndex),
+              var rhs = other.index(other.startIndex, offsetBy: otherOffset, limitedBy: other.endIndex) else {
             return false
         }
-
-        for i in 0..<targetLength {
-            let charSelf: Character = self[i + selfOffset]
-            let charOther: Character = other[i + otherOffset]
+        // Keep Character equality and per-Character case folding. Advance each
+        // cursor once instead of reconstructing it from the start per comparison.
+        for _ in 0..<targetLength {
+            guard lhs != endIndex, rhs != other.endIndex else { return false }
+            let charSelf = self[lhs]
+            let charOther = other[rhs]
             if ignoreCase {
-                if charSelf.lowercase != charOther.lowercase {
-                    return false
-                }
+                if charSelf.lowercase != charOther.lowercase { return false }
             } else if charSelf != charOther {
                 return false
             }
+            formIndex(after: &lhs)
+            other.formIndex(after: &rhs)
         }
         return true
     }
 
     @inline(__always)
     func startsWith(_ input: String, _ offset: Int) -> Bool {
-        if ((offset < 0) || (offset > count - input.count)) {
+        guard offset >= 0,
+              var cursor = index(startIndex, offsetBy: offset, limitedBy: endIndex) else {
             return false
         }
-        for i in 0..<input.count {
-            let charSelf: Character = self[i + offset]
-            let charOther: Character = input[i]
-            if charSelf != charOther { return false }
+        for expected in input {
+            guard cursor != endIndex, self[cursor] == expected else { return false }
+            formIndex(after: &cursor)
         }
         return true
     }

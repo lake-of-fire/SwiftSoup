@@ -210,6 +210,7 @@ open class TokenQueue {
     }
 
     open func consumeToIgnoreCase(_ seq: String) -> String {
+        guard !seq.isEmpty else { return "" }
         let start = pos
         let first = seq.substring(0, 1)
         let canScan = first.lowercased() == first.uppercased() // if first is not cased, use index of
@@ -299,38 +300,66 @@ open class TokenQueue {
      - returns: data matched from the queue
      */
     open func chompBalanced(_ open: Character, _ close: Character) -> String {
-        var start = -1
-        var end = -1
+        return chompBalanced(open, close, preservingDelimiters: false)
+    }
+
+    private func chompBalanced(_ open: Character, _ close: Character, preservingDelimiters: Bool) -> String {
+        let start = queue.index(queue.startIndex, offsetBy: pos)
+        // CSS delimiters are code points. A combining mark can share their
+        // Character, and a Unicode prepend character can absorb a following
+        // closer. Preserve the public API's multi-scalar delimiters as well.
+        if open.unicodeScalars.count == 1, close.unicodeScalars.count == 1,
+           let openScalar = open.unicodeScalars.first, let closeScalar = close.unicodeScalars.first {
+            return chompBalanced(in: queue.unicodeScalars, from: start, open: openScalar, close: closeScalar,
+                                 preservingDelimiters: preservingDelimiters)
+        }
+        return chompBalanced(in: queue, from: start, open: open, close: close,
+                             preservingDelimiters: preservingDelimiters)
+    }
+
+    private func chompBalanced<Characters: Collection>(in characters: Characters, from start: String.Index,
+                                                      open: Characters.Element, close: Characters.Element,
+                                                      preservingDelimiters: Bool) -> String
+        where Characters.Index == String.Index,
+              Characters.Element: Equatable & ExpressibleByUnicodeScalarLiteral {
+        var cursor = start
+        var payloadStart: String.Index?
+        var payloadEnd = start
         var depth = 0
-        var last: Character = TokenQueue.empty
-        var inQuote = false
+        var escaped = false
+        var quote: Characters.Element?
 
         repeat {
-            if (isEmpty()) {break}
-            let c = consume()
-            if (last == TokenQueue.empty || last != TokenQueue.ESC) {
-                if ((c=="'" || c=="\"") && c != open) {
-                    inQuote = !inQuote
-                }
-                if (inQuote) {
-                    continue
-                }
-                if (c==open) {
-                    depth+=1
-                    if (start == -1) {
-                        start = pos
-                    }
-                } else if (c==close) {
-                    depth-=1
-                }
+            guard cursor < characters.endIndex else { break }
+            let c = characters[cursor]
+            characters.formIndex(after: &cursor)
+            if escaped {
+                escaped = false
+            } else if c == "\\" {
+                escaped = true
+            } else if let quoteCharacter = quote {
+                if c == quoteCharacter { quote = nil }
+            } else if (c == "'" || c == "\"") && c != open {
+                quote = c
+            } else if c == open {
+                depth += 1
+                if payloadStart == nil { payloadStart = cursor }
+            } else if c == close {
+                depth -= 1
             }
 
-            if (depth > 0 && last != TokenQueue.empty) {
-                end = pos // don't include the outer match pair in the return
+            if depth > 0 && payloadStart != nil {
+                payloadEnd = cursor // don't include the outer match pair
             }
-            last = c
-        } while (depth > 0)
-        return (end >= 0) ? queue.substring(start, end-start) : ""
+        } while depth > 0
+        // A compound selector must retain the actual source spelling, including
+        // partial input. Rebuilding open + payload + close invents a delimiter at
+        // EOF and can bypass the inner numeric parser or change literal content.
+        let result = preservingDelimiters
+            ? String(decoding: queue.utf8[start..<cursor], as: UTF8.self)
+            : payloadStart.map { String(decoding: queue.utf8[$0..<payloadEnd], as: UTF8.self) } ?? ""
+        advanceCssPosition(from: start, to: cursor)
+        return result
     }
 
     /**
@@ -340,16 +369,19 @@ open class TokenQueue {
      */
     public static func unescape(_ input: String) -> String {
         let out = StringBuilder()
-        var last = empty
-        for c in input {
-            if (c == ESC) {
-                if (last != empty && last == TokenQueue.ESC) {
-                    out.append(c)
-                }
+        var escaped = false
+        // Quote one scalar at a time, including within a Swift grapheme. A run
+        // of backslashes is consumed in pairs; a trailing lone escape is dropped
+        // as before. This is text unescaping, not CSS hexadecimal decoding.
+        for scalar in input.unicodeScalars {
+            if escaped {
+                out.appendCodePoint(scalar)
+                escaped = false
+            } else if scalar == "\\" {
+                escaped = true
             } else {
-                out.append(c)
+                out.appendCodePoint(scalar)
             }
-            last = c
         }
         return out.toString()
     }
@@ -410,29 +442,241 @@ open class TokenQueue {
     }
 
     /**
-     Consume a CSS identifier (ID or class) off the queue (letter, digit, `-`, `_`)
-     http://www.w3.org/TR/CSS2/syndata.html#value-def-identifier
+     Consume a CSS identifier (ID or class), decoding simple and hexadecimal escapes.
+     Hex escapes consume one to six digits and one optional CSS whitespace terminator.
+     https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point
      - returns: identifier
      */
     open func consumeCssIdentifier() -> String {
+        let start = queue.index(queue.startIndex, offsetBy: pos)
+        var cursor = start
+        let bytes = queue.utf8
         let accum = StringBuilder()
-        while !isEmpty() {
-            let c = queue.charAt(pos)
-            if c == TokenQueue.ESC {
-                pos += 1
-                if !isEmpty() {
-                    accum.append(queue.charAt(pos))
-                    pos += 1
+        while cursor < bytes.endIndex {
+            let byte = bytes[cursor]
+            if byte == 0x5C { // backslash
+                let escape = cssEscape(at: cursor)
+                if let scalar = escape.scalar {
+                    accum.appendCodePoint(scalar)
+                } else {
+                    // Preserve the existing handling of non-hex escapes and a trailing backslash.
+                    for byte in bytes[bytes.index(after: cursor)..<escape.end] {
+                        accum.append(byte)
+                    }
                 }
-            } else if Character.isLetterOrDigit(c) || c == "-" || c == "_" {
-                accum.append(c)
-                pos += 1
+                cursor = escape.end
+            } else if (byte >= 0x30 && byte <= 0x39) ||
+                        (byte >= 0x41 && byte <= 0x5A) ||
+                        (byte >= 0x61 && byte <= 0x7A) ||
+                        byte == 0x2D || byte == 0x5F || byte >= 0x80 {
+                // CSS permits non-ASCII code points, including combining marks after a hex digit.
+                accum.append(byte)
+                bytes.formIndex(after: &cursor)
             } else {
                 break
             }
         }
-
+        advanceCssPosition(from: start, to: cursor)
         return accum.toString()
+    }
+
+    /// Trim selector padding, not escaped identifier content or non-ASCII code points.
+    internal static func trimCssQuery(_ query: String) -> String {
+        let bytes = query.utf8
+        var start = bytes.startIndex
+        var end = bytes.endIndex
+        while start < end, StringUtil.isAsciiWhitespaceByte(bytes[start]) {
+            bytes.formIndex(after: &start)
+        }
+        while start < end {
+            let previous = bytes.index(before: end)
+            guard StringUtil.isAsciiWhitespaceByte(bytes[previous]) else { break }
+            end = previous
+        }
+        if end < bytes.endIndex {
+            // An odd run of backslashes escapes the first trailing whitespace
+            // code point. Further whitespace is padding. Preserve legacy CRLF
+            // escapes as a pair, just as cssEscape(at:) does.
+            var cursor = end
+            var escaped = false
+            while cursor > start {
+                let previous = bytes.index(before: cursor)
+                guard bytes[previous] == 0x5C else { break }
+                escaped.toggle()
+                cursor = previous
+            }
+            if escaped {
+                let first = bytes[end]
+                bytes.formIndex(after: &end)
+                if first == 0x0D, end < bytes.endIndex, bytes[end] == 0x0A {
+                    bytes.formIndex(after: &end)
+                }
+            }
+        }
+        if start == bytes.startIndex && end == bytes.endIndex { return query }
+        return String(decoding: bytes[start..<end], as: UTF8.self)
+    }
+
+    /// Consume an ASCII ID/class marker even when a following combining mark
+    /// shares its Swift Character. CSS syntax operates on code points.
+    internal func matchChompCssIdentifierPrefix(_ prefix: UInt8) -> Bool {
+        let start = queue.index(queue.startIndex, offsetBy: pos)
+        let bytes = queue.utf8
+        guard start < bytes.endIndex, bytes[start] == prefix else { return false }
+        advanceCssPosition(from: start, to: bytes.index(after: start))
+        return true
+    }
+
+    /// Consume a compound selector up to its next unescaped combinator.
+    /// Scan raw bytes so Unicode graphemes cannot swallow ASCII syntax.
+    internal func consumeCssSubQuery() -> String {
+        var result = ""
+        while !isEmpty() {
+            let start = queue.index(queue.startIndex, offsetBy: pos)
+            let bytes = queue.utf8
+            let byte = bytes[start]
+            if byte == 0x5C {
+                result.append(consumeCssEscapeSequence())
+            } else if byte == 0x28 || byte == 0x5B {
+                let open: Character = byte == 0x28 ? "(" : "["
+                let close: Character = byte == 0x28 ? ")" : "]"
+                result.append(chompBalanced(open, close, preservingDelimiters: true))
+            } else if TokenQueue.isCssSubQueryBoundary(byte) {
+                break
+            } else {
+                var end = bytes.index(after: start)
+                while end < bytes.endIndex, !TokenQueue.isCssSubQueryBoundary(bytes[end]) {
+                    bytes.formIndex(after: &end)
+                }
+                result.append(String(decoding: bytes[start..<end], as: UTF8.self))
+                advanceCssPosition(from: start, to: end)
+            }
+        }
+        return result
+    }
+
+    private static func isCssSubQueryBoundary(_ byte: UInt8) -> Bool {
+        if StringUtil.isAsciiWhitespaceByte(byte) { return true }
+        switch byte {
+        case 0x5C, 0x28, 0x5B, 0x2C, 0x3E, 0x2B, 0x7E: return true
+        default: return false
+        }
+    }
+
+    /// Preserve an entire escape while splitting a selector. Its optional whitespace is not a combinator.
+    internal func consumeCssEscapeSequence() -> String {
+        let start = queue.index(queue.startIndex, offsetBy: pos)
+        guard start < queue.endIndex, queue.utf8[start] == 0x5C else { return "" }
+        let end = cssEscape(at: start).end
+        let escaped = String(decoding: queue.utf8[start..<end], as: UTF8.self)
+        advanceCssPosition(from: start, to: end)
+        return escaped
+    }
+
+    /// Consume a comma-separated CSS selector list without splitting escapes,
+    /// quoted text, attribute selectors, or nested functional expressions.
+    internal func consumeCssSelectorList() -> [String] {
+        var branches: [String] = []
+        var branch = ""
+        var quote: UInt8?
+        while !isEmpty() {
+            let start = queue.index(queue.startIndex, offsetBy: pos)
+            let bytes = queue.utf8
+            let byte = bytes[start]
+            if byte == 0x5C { // backslash
+                branch += consumeCssEscapeSequence()
+            } else if let openQuote = quote {
+                let end = queue.unicodeScalars.index(after: start)
+                branch += String(decoding: bytes[start..<end], as: UTF8.self)
+                advanceCssPosition(from: start, to: end)
+                if byte == openQuote { quote = nil }
+            } else if byte == 0x22 || byte == 0x27 { // double or single quote
+                quote = byte
+                let end = queue.unicodeScalars.index(after: start)
+                branch += String(decoding: bytes[start..<end], as: UTF8.self)
+                advanceCssPosition(from: start, to: end)
+            } else if byte == 0x28 || byte == 0x5B { // ( or [
+                let open: Character = byte == 0x28 ? "(" : "["
+                let close: Character = byte == 0x28 ? ")" : "]"
+                branch += chompBalanced(open, close, preservingDelimiters: true)
+            } else if byte == 0x2C { // comma
+                branches.append(branch)
+                branch = ""
+                let end = bytes.index(after: start)
+                advanceCssPosition(from: start, to: end)
+            } else {
+                // Advance ordinary runs together instead of repeatedly resolving
+                // a Character offset for every scalar in a long selector.
+                var end = bytes.index(after: start)
+                while end < bytes.endIndex {
+                    let next = bytes[end]
+                    if next == 0x5C || next == 0x22 || next == 0x27 ||
+                        next == 0x28 || next == 0x5B || next == 0x2C { break }
+                    bytes.formIndex(after: &end)
+                }
+                branch += String(decoding: bytes[start..<end], as: UTF8.self)
+                advanceCssPosition(from: start, to: end)
+            }
+        }
+        branches.append(branch)
+        return branches
+    }
+
+    /// A nil scalar means a non-hex escape: retain its literal contents after the backslash.
+    private func cssEscape(at start: String.Index) -> (end: String.Index, scalar: UnicodeScalar?) {
+        let bytes = queue.utf8
+        var cursor = bytes.index(after: start)
+        var value: UInt32 = 0
+        var digits = 0
+        while cursor < bytes.endIndex, digits < 6, let digit = TokenQueue.cssHexValue(bytes[cursor]) {
+            value = value * 16 + digit
+            digits += 1
+            bytes.formIndex(after: &cursor)
+        }
+        if digits == 0 {
+            if cursor < bytes.endIndex {
+                let first = bytes[cursor]
+                cursor = queue.unicodeScalars.index(after: cursor)
+                // Retain the legacy non-hex CRLF escape behavior.
+                if first == 0x0D, cursor < bytes.endIndex, bytes[cursor] == 0x0A {
+                    bytes.formIndex(after: &cursor)
+                }
+            }
+            return (cursor, nil)
+        }
+        if cursor < bytes.endIndex {
+            let terminator = bytes[cursor]
+            if StringUtil.isAsciiWhitespaceByte(terminator) {
+                bytes.formIndex(after: &cursor)
+                // CSS preprocessing treats CRLF as one newline, not two terminators.
+                if terminator == 0x0D, cursor < bytes.endIndex, bytes[cursor] == 0x0A {
+                    bytes.formIndex(after: &cursor)
+                }
+            }
+        }
+        let replacement: UnicodeScalar = "\u{FFFD}"
+        return (cursor, value == 0 ? replacement : (UnicodeScalar(value) ?? replacement))
+    }
+
+    @inline(__always)
+    private static func cssHexValue(_ byte: UInt8) -> UInt32? {
+        switch byte {
+        case 0x30...0x39: return UInt32(byte - 0x30)
+        case 0x41...0x46: return UInt32(byte - 0x41 + 10)
+        case 0x61...0x66: return UInt32(byte - 0x61 + 10)
+        default: return nil
+        }
+    }
+
+    private func advanceCssPosition(from start: String.Index, to end: String.Index) {
+        if end.samePosition(in: queue) != nil {
+            pos += queue.distance(from: start, to: end)
+        } else {
+            // An ASCII syntax character can share a grapheme with a following combining mark.
+            // Retain every unconsumed code point when advancing through that grapheme.
+            queue = String(decoding: queue.utf8[end...], as: UTF8.self)
+            pos = 0
+        }
     }
 
     /**
