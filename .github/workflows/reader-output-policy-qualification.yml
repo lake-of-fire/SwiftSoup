@@ -1,0 +1,40 @@
+name: Reader output-policy exact-head qualification
+
+on:
+  push:
+    branches:
+      - fix/upstream-reader-output-policy-20260912
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-matrix:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          if [ -d /Applications/Xcode_26.3.app ]; then sudo xcode-select -s /Applications/Xcode_26.3.app; fi
+          swift --version
+          xcodebuild -version
+          echo "QUALIFIED_HEAD=$(git rev-parse HEAD)"
+      - name: Source-scope guard
+        run: |
+          set -euxo pipefail
+          git diff --name-only 6778a6db3e1dc95a33fb16918c79221ea2db9000...HEAD
+          test "$(git diff --name-only 6778a6db3e1dc95a33fb16918c79221ea2db9000...HEAD -- Sources | sort | tr '\n' ' ')" = "Sources/Document.swift Sources/Node.swift "
+      - name: Debug package suite
+        run: swift test
+      - name: Focused Reader output-policy suites
+        run: |
+          swift test --filter MutationAndOutputPolicyTests
+          swift test --filter ReaderDocumentOutputTests
+      - name: Release package suite
+        run: swift test -c release
+      - name: AddressSanitizer package suite
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: swift test --sanitize=address
