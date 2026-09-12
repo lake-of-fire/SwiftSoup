@@ -24,7 +24,9 @@ open class Node: Equatable, Hashable {
     @usableFromInline
     var baseUri: [UInt8]?
     @usableFromInline
-    var attributes: Attributes?
+    var attributes: Attributes? {
+        didSet { attributes?.addOwner(self) }
+    }
 
     @inline(__always)
     internal func ensureAttributesForWrite() -> Attributes {
@@ -32,9 +34,6 @@ open class Node: Equatable, Hashable {
             return attributes
         }
         let created = Attributes()
-        if let element = self as? Element {
-            created.ownerElement = element
-        }
         attributes = created
         return created
     }
@@ -119,6 +118,7 @@ open class Node: Equatable, Hashable {
         }
         self.baseUri = baseUri.trim()
         self.attributes = attributes
+        attributes.addOwner(self)
     }
 
     public init(
@@ -132,6 +132,7 @@ open class Node: Equatable, Hashable {
         }
         self.baseUri = baseUri.trim()
         self.attributes = attributes
+        attributes?.addOwner(self)
     }
     
     public init(
@@ -207,7 +208,7 @@ open class Node: Equatable, Hashable {
     /**
      Get an attribute's value by its key. **Case insensitive.**
      
-     To get an absolute URL from an attribute that may be a relative URL, prefix the key with `abs`,
+     To get an absolute URL from an attribute that may be relative to the element's base URI, prefix the key with `abs`,
      which is a shortcut to the ``absUrl(_:)-(String)`` method.
      
      E.g.:
@@ -294,7 +295,7 @@ open class Node: Equatable, Hashable {
         guard let attributes = attributes else {
             return false
         }
-        if attributeKey.starts(with: Node.abs) {
+        if Node.hasAbsPrefix(attributeKey) {
             let key = ArraySlice(attributeKey.dropFirst(Node.absCount))
             do {
                 let abs = try absUrl(key)
@@ -302,7 +303,8 @@ open class Node: Equatable, Hashable {
                     return true
                 }
             } catch {
-                return false
+                // Invalid virtual suffixes must not hide a physical attribute
+                // with the complete name (for example a literal "abs:").
             }
             
         }
@@ -313,7 +315,7 @@ open class Node: Equatable, Hashable {
     /**
      Remove an attribute from this element.
      - parameter attributeKey: The attribute to remove.
-     - returns: this (for chaining)
+     - returns: this node, for chaining
      */
     @discardableResult
     open func removeAttr(_ attributeKey: [UInt8]) throws -> Node {
@@ -359,10 +361,18 @@ open class Node: Equatable, Hashable {
             
             func head(_ node: Node, _ depth: Int) throws {
                 node.baseUri = baseUri
+                (node as? Element)?.invalidateSelectorResultCache()
             }
             
             func tail(_ node: Node, _ depth: Int) throws {
             }
+        }
+        // Resolved-URL selectors may be cached on any subtree or ancestor.
+        // Physical attribute indexes and text caches do not depend on base URI.
+        var ancestor = parentNode
+        while let node = ancestor {
+            (node as? Element)?.invalidateSelectorResultCache()
+            ancestor = node.parentNode
         }
         try traverse(nodeVisitor(baseUri))
     }
@@ -402,15 +412,15 @@ open class Node: Equatable, Hashable {
         if (!hasAttr(keyStr)) {
             return Node.empty // nothing to make absolute with
         } else {
-            return StringUtil.resolve(String(decoding: baseUri!, as: UTF8.self), relUrl: try attr(keyStr)).utf8Array
+            return StringUtil.resolve(String(decoding: getBaseUriUTF8(), as: UTF8.self), relUrl: try attr(keyStr)).utf8Array
         }
     }
     
     /**
      Get a child node by its 0-based index.
      - parameter index: index of child node
-     - returns: the child node at this index.
      - warning: Crashes if the index is out of bounds!
+     - returns: the child node at this index.
      */
     @inline(__always)
     open func childNode(_ index: Int) -> Node {
@@ -480,13 +490,10 @@ open class Node: Equatable, Hashable {
      */
     @inline(__always)
     open func ownerDocument() -> Document? {
-        if let this =  self as? Document {
-            return this
-        } else if (parentNode == nil) {
-            return nil
-        } else {
-            return parentNode!.ownerDocument()
+        if let document = self as? Document {
+            return document
         }
+        return parentNode?.ownerDocument()
     }
 
     /// A token that changes when text content in this node's tree mutates.
@@ -804,6 +811,7 @@ open class Node: Equatable, Hashable {
     
     @inline(__always)
     public func setParentNode(_ parentNode: Node) throws {
+        try parentNode.validateChildInsertion(self)
         if (self.parentNode != nil) {
             try self.parentNode?.removeChild(self)
         }
@@ -814,6 +822,8 @@ open class Node: Equatable, Hashable {
     public func replaceChild(_ out: Node, _ input: Node) throws {
         try Validate.isTrue(val: out.parentNode === self)
         try Validate.notNull(obj: input)
+        guard out !== input else { return }
+        try validateChildInsertion(input)
         if (input.parentNode != nil) {
             try input.parentNode?.removeChild(input)
         }
@@ -854,7 +864,9 @@ open class Node: Equatable, Hashable {
     
     @inline(__always)
     public func addChildren(_ children: [Node]) throws {
-        //most used. short circuit addChildren(int), which hits reindex children and array copy
+        guard !children.isEmpty else { return }
+        // Validate the whole batch before detaching any input from its current tree.
+        for child in children { try validateChildInsertion(child) }
         for child in children {
             try reparentChild(child)
             childNodes.append(child)
@@ -872,28 +884,46 @@ open class Node: Equatable, Hashable {
     
     @inline(__always)
     public func addChildren(_ index: Int, _ children: [Node]) throws {
+        try Validate.isTrue(val: index >= 0 && index <= childNodes.count, msg: "Insert position out of bounds.")
+        guard !children.isEmpty else { return }
+        for input in children { try validateChildInsertion(input) }
+        var insertionIndex = index
         for input in children.reversed() {
+            // The insertion gap belongs to the original list. Removing an earlier
+            // sibling shifts that gap left before inserting at it.
+            if input.parentNode === self && input.siblingIndex < insertionIndex {
+                insertionIndex -= 1
+            }
             try reparentChild(input)
-            childNodes.insert(input, at: index)
-            reindexChildren(index)
+            childNodes.insert(input, at: insertionIndex)
+            reindexChildren(insertionIndex)
             input.markSourceDirty()
         }
         markSourceDirty()
         bumpTextMutationVersion()
     }
-    
+
     @inline(__always)
-    public func reparentChild(_ child: Node)throws {
-        try child.parentNode?.removeChild(child)
+    public func reparentChild(_ child: Node) throws {
+        // setParentNode validates before removing the old parent link.
         try child.setParentNode(self)
         // propagate builder reference for bulk-append checks
         child.treeBuilder = self.treeBuilder
     }
-    
+
+    @inline(__always)
+    @usableFromInline
+    internal func validateChildInsertion(_ child: Node) throws {
+        // A leaf cannot be an ancestor. Keep the common detached-leaf path cheap.
+        try Validate.isTrue(val: child !== self &&
+            (!child.hasChildNodes() || !child.isAncestor(of: self)),
+            msg: "A node cannot contain itself or one of its ancestors.")
+    }
+
     @usableFromInline
     internal func reindexChildren(_ start: Int) {
         for (index, node) in childNodes[start...].enumerated() {
-            node.setSiblingIndex(start + index)
+            node.siblingIndex = start + index
         }
     }
     
@@ -1033,7 +1063,7 @@ open class Node: Equatable, Hashable {
     
     // if this node has no document (or parent), retrieve the default output settings
     func getOutputSettings() -> OutputSettings {
-        return ownerDocument() != nil ? ownerDocument()!.outputSettings() : (Document([])).outputSettings()
+        return ownerDocument()?.outputSettings() ?? OutputSettings()
     }
     
     /**
@@ -1260,7 +1290,6 @@ open class Node: Equatable, Hashable {
             } else {
                 clone.attributes = attrs.clone()
             }
-            clone.attributes?.ownerElement = clone as? SwiftSoup.Element
         } else {
             clone.attributes = nil
         }

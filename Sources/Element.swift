@@ -14,50 +14,54 @@ import Foundation
 @usableFromInline
 final class SelectorResultCache {
     @usableFromInline
-    final class LRUNode {
+    final class LRUNode<Value> {
         let key: String
-        var value: Elements
-        var prev: LRUNode?
-        var next: LRUNode?
+        var value: Value
+        var prev: LRUNode<Value>?
+        var next: LRUNode<Value>?
 
-        init(key: String, value: Elements) {
+        init(key: String, value: Value) {
             self.key = key
             self.value = value
         }
     }
 
     @usableFromInline
-    final class LRUMap {
+    final class Storage<Value> {
         let capacity: Int
-        private var nodes: [String: LRUNode] = [:]
-        private var head: LRUNode?
-        private var tail: LRUNode?
+        private var nodes: [SelectorQueryKey: LRUNode<Value>] = [:]
+        private var head: LRUNode<Value>?
+        private var tail: LRUNode<Value>?
 
         init(capacity: Int) {
             self.capacity = max(1, capacity)
         }
 
-        @inline(__always)
-        func contains(_ key: String) -> Bool {
-            return nodes[key] != nil
+        deinit {
+            clear()
         }
 
         @inline(__always)
-        func get(_ key: String) -> Elements? {
-            guard let node = nodes[key] else { return nil }
+        func contains(_ key: String) -> Bool {
+            return nodes[SelectorQueryKey(key)] != nil
+        }
+
+        @inline(__always)
+        func get(_ key: String) -> Value? {
+            guard let node = nodes[SelectorQueryKey(key)] else { return nil }
             moveToHead(node)
             return node.value
         }
 
         @inline(__always)
-        func set(_ key: String, _ value: Elements) -> LRUNode? {
-            if let node = nodes[key] {
+        func set(_ key: String, _ value: Value) -> LRUNode<Value>? {
+            if let node = nodes[SelectorQueryKey(key)] {
                 node.value = value
                 moveToHead(node)
                 return nil
             }
             let node = LRUNode(key: key, value: value)
-            nodes[key] = node
+            nodes[SelectorQueryKey(key)] = node
             insertAtHead(node)
             if nodes.count > capacity {
                 return popTail()
@@ -66,29 +70,35 @@ final class SelectorResultCache {
         }
 
         @inline(__always)
-        func remove(_ key: String) -> Elements? {
-            guard let node = nodes.removeValue(forKey: key) else { return nil }
+        func remove(_ key: String) -> Value? {
+            guard let node = nodes.removeValue(forKey: SelectorQueryKey(key)) else { return nil }
             removeNode(node)
             return node.value
         }
 
         @inline(__always)
-        func popTail() -> LRUNode? {
+        func popTail() -> LRUNode<Value>? {
             guard let tail else { return nil }
             removeNode(tail)
-            nodes.removeValue(forKey: tail.key)
+            nodes.removeValue(forKey: SelectorQueryKey(tail.key))
             return tail
         }
 
         @inline(__always)
         func clear() {
+            // Both links are strong. Break the chain before releasing the map
+            // so cached elements are not kept alive by adjacent LRU nodes.
+            for node in nodes.values {
+                node.prev = nil
+                node.next = nil
+            }
             nodes.removeAll(keepingCapacity: true)
             head = nil
             tail = nil
         }
 
         @inline(__always)
-        private func insertAtHead(_ node: LRUNode) {
+        private func insertAtHead(_ node: LRUNode<Value>) {
             node.prev = nil
             node.next = head
             if let head {
@@ -100,14 +110,14 @@ final class SelectorResultCache {
         }
 
         @inline(__always)
-        private func moveToHead(_ node: LRUNode) {
+        private func moveToHead(_ node: LRUNode<Value>) {
             guard head !== node else { return }
             removeNode(node)
             insertAtHead(node)
         }
 
         @inline(__always)
-        private func removeNode(_ node: LRUNode) {
+        private func removeNode(_ node: LRUNode<Value>) {
             let prev = node.prev
             let next = node.next
             if let prev {
@@ -126,25 +136,46 @@ final class SelectorResultCache {
     }
 
     @usableFromInline
-    let probationary: LRUMap
+    typealias LRUMap = Storage<Elements>
+
     @usableFromInline
-    let protected: LRUMap
+    struct Result {
+        let elements: [Element]
+        let includesOwner: Bool
+
+        init(elements: [Element], includesOwner: Bool) {
+            self.elements = elements
+            self.includesOwner = includesOwner
+        }
+
+        func materialize(owner: Element) -> Elements {
+            if includesOwner {
+                return Elements([owner] + elements)
+            }
+            return Elements(elements)
+        }
+    }
+
+    @usableFromInline
+    let probationary: Storage<Result>
+    @usableFromInline
+    let protected: Storage<Result>
     private let doorkeeperCapacity: Int
-    private var doorkeeper: Set<String> = []
-    private var doorkeeperOrder: [String] = []
+    private var doorkeeper: Set<SelectorQueryKey> = []
+    private var doorkeeperOrder: [SelectorQueryKey] = []
 
     init(capacity: Int) {
         let protectedCap = max(1, (capacity * 3) / 4)
         let probationaryCap = max(1, capacity - protectedCap)
-        probationary = LRUMap(capacity: probationaryCap)
-        protected = LRUMap(capacity: protectedCap)
+        probationary = Storage(capacity: probationaryCap)
+        protected = Storage(capacity: protectedCap)
         doorkeeperCapacity = max(1, capacity)
         doorkeeper.reserveCapacity(doorkeeperCapacity)
         doorkeeperOrder.reserveCapacity(doorkeeperCapacity)
     }
 
     @inline(__always)
-    func get(_ key: String) -> Elements? {
+    func get(_ key: String) -> Result? {
         if let value = protected.get(key) {
             return value
         }
@@ -158,7 +189,7 @@ final class SelectorResultCache {
     }
 
     @inline(__always)
-    func put(_ key: String, _ value: Elements) {
+    func put(_ key: String, _ value: Result) {
         if protected.contains(key) {
             _ = protected.set(key, value)
             return
@@ -167,16 +198,17 @@ final class SelectorResultCache {
             _ = probationary.set(key, value)
             return
         }
-        if doorkeeper.contains(key) {
-            doorkeeper.remove(key)
-            if let idx = doorkeeperOrder.firstIndex(of: key) {
+        let admissionKey = SelectorQueryKey(key)
+        if doorkeeper.contains(admissionKey) {
+            doorkeeper.remove(admissionKey)
+            if let idx = doorkeeperOrder.firstIndex(of: admissionKey) {
                 doorkeeperOrder.remove(at: idx)
             }
             _ = probationary.set(key, value)
             return
         }
-        doorkeeper.insert(key)
-        doorkeeperOrder.append(key)
+        doorkeeper.insert(admissionKey)
+        doorkeeperOrder.append(admissionKey)
         if doorkeeperOrder.count > doorkeeperCapacity {
             let removed = doorkeeperOrder.removeFirst()
             doorkeeper.remove(removed)
@@ -380,13 +412,11 @@ open class Element: Node {
      */
     public convenience init(_ tag: Tag, _ baseUri: String, _ attributes: Attributes, skipChildReserve: Bool = false) {
         self.init(tag, baseUri.utf8Array, attributes, skipChildReserve: skipChildReserve)
-        attributes.ownerElement = self
     }
     
     public init(_ tag: Tag, _ baseUri: [UInt8], _ attributes: Attributes, skipChildReserve: Bool = false) {
         self._tag = tag
         super.init(baseUri, attributes: attributes, skipChildReserve: skipChildReserve)
-        attributes.ownerElement = self
     }
     /**
      Create a new Element from a tag and a base URI.
@@ -399,7 +429,6 @@ open class Element: Node {
      */
     public convenience init(_ tag: Tag, _ baseUri: String, skipChildReserve: Bool = false) {
         self.init(tag, baseUri.utf8Array, skipChildReserve: skipChildReserve)
-        attributes?.ownerElement = self
     }
     
     public init(_ tag: Tag, _ baseUri: [UInt8], skipChildReserve: Bool = false) {
@@ -514,7 +543,6 @@ open class Element: Node {
             return attributes
         }
         let created = Attributes()
-        created.ownerElement = self
         attributes = created
         return created
     }
@@ -541,7 +569,13 @@ open class Element: Node {
         if Element.isAbsAttributeKey(attributeKey) {
             return nil
         }
-        return attributes.valueSliceCaseSensitive(attributeKey)
+        if !attributes.hasUppercaseKeys {
+            return attributes.valueSliceCaseSensitive(attributeKey)
+        }
+        // Attribute predicates are case-insensitive even after case-preserving
+        // mutation. Keep absence distinct from a present, empty value.
+        guard attributes.hasKeyIgnoreCase(key: attributeKey) else { return nil }
+        return try? attributes.getIgnoreCaseSlice(key: attributeKey)
     }
 
     @usableFromInline
@@ -700,6 +734,20 @@ open class Element: Node {
      */
     @inline(__always)
     open func child(_ index: Int) -> Element {
+        let elementType = type(of: self)
+        if index >= 0,
+           elementType == Element.self || elementType == Document.self || elementType == FormElement.self {
+            // Built-in children() views filter this storage without callbacks.
+            // Stop at the requested element instead of materializing every child.
+            var remaining = index
+            for node in childNodes {
+                if let element = node as? Element {
+                    if remaining == 0 { return element }
+                    remaining -= 1
+                }
+            }
+        }
+        // Preserve custom children()/get() projections and out-of-bounds behavior.
         return children().get(index)
     }
     
@@ -834,6 +882,7 @@ open class Element: Node {
         if !isBulkBuilding {
             child.markSourceDirty()
             markSourceDirty()
+            bumpTextMutationVersion()
         }
         return self
     }
@@ -1032,7 +1081,11 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     public func empty() -> Element {
+        guard !childNodes.isEmpty else { return self }
         markQueryIndexesDirty()
+        // Retained children remain valid independent subtrees, not phantom
+        // members of this element with obsolete sibling positions.
+        for child in childNodes { child.parentNode = nil }
         childNodes.removeAll()
         bumpTextMutationVersion()
         markSourceDirty()
@@ -1091,14 +1144,31 @@ open class Element: Node {
 
     private static func cssEscapeIdentifier(_ identifier: String) -> String {
         var escaped = ""
-        escaped.reserveCapacity(identifier.count)
+        escaped.reserveCapacity(identifier.utf8.count)
 
-        for character in identifier {
-            if Character.isLetterOrDigit(character) || character == "-" || character == "_" {
-                escaped.append(character)
+        let scalars = identifier.unicodeScalars
+        let isLoneHyphen = identifier == "-"
+        for (offset, scalar) in scalars.enumerated() {
+            let value = scalar.value
+            if value == 0 {
+                // CSS cannot represent U+0000 in an identifier.
+                escaped.unicodeScalars.append("\u{FFFD}")
+            } else if value <= 0x20 || value == 0x7F ||
+                        ((0x30...0x39).contains(value) &&
+                         (offset == 0 || (offset == 1 && scalars.first == "-"))) {
+                // Hex-escape controls and leading digits. Also encode spaces so
+                // query trimming cannot remove a trailing escaped literal space.
+                escaped.append("\\")
+                escaped.append(String(value, radix: 16))
+                escaped.append(" ")
+            } else if value >= 0x80 || value == 0x5F ||
+                        (value == 0x2D && !isLoneHyphen) ||
+                        (0x30...0x39).contains(value) ||
+                        (0x41...0x5A).contains(value) || (0x61...0x7A).contains(value) {
+                escaped.unicodeScalars.append(scalar)
             } else {
                 escaped.append("\\")
-                escaped.append(character)
+                escaped.unicodeScalars.append(scalar)
             }
         }
 
@@ -1134,45 +1204,75 @@ open class Element: Node {
      - returns: the next element, or `nil` if there is no next element
      - seealso: ``previousElementSibling()``
      */
-    public func nextElementSibling()throws->Element? {
-        if (parentNode == nil) {return nil}
-        let siblings: Array<Element>? = parent()?.children().array()
-        let index: Int? = try Element.indexInList(self, siblings)
-        try Validate.notNull(obj: index)
-        if let siblings = siblings {
-            if (siblings.count > index!+1) {
-                return siblings[index!+1]
-            } else {
-                return nil
-            }
-        }
-        return nil
+    public func nextElementSibling() throws -> Element? {
+        return try adjacentElementSibling(forward: true)
     }
-    
+
     /**
      Gets the previous element sibling of this element.
      - returns: the previous element, or `nil` if there is no previous element
      - seealso: ``nextElementSibling()``
      */
-    public func previousElementSibling()throws->Element? {
-        if (parentNode == nil) {return nil}
-        let siblings: Array<Element>? = parent()?.children().array()
-        let index: Int? = try Element.indexInList(self, siblings)
-        try Validate.notNull(obj: index)
-        if (index! > 0) {
-            return siblings?[index!-1]
-        } else {
-            return nil
-        }
+    public func previousElementSibling() throws -> Element? {
+        return try adjacentElementSibling(forward: false)
     }
-    
+
+    private func adjacentElementSibling(forward: Bool) throws -> Element? {
+        guard parentNode != nil else { return nil }
+        let parent = parent()
+        try Validate.notNull(obj: parent)
+        let step = forward ? 1 : -1
+        let parentType = type(of: parent!)
+        if parentType != Element.self && parentType != Document.self && parentType != FormElement.self {
+            // Custom subclasses can override children(); preserve that view.
+            let siblings = parent!.children().array()
+            let index = try Element.indexInList(self, siblings)
+            try Validate.notNull(obj: index)
+            let adjacent = index! + step
+            return adjacent >= 0 && adjacent < siblings.count ? siblings[adjacent] : nil
+        }
+
+        let nodes = parent!.childNodes
+        var index = try indexInSiblingNodes(nodes) + step
+        while index >= 0 && index < nodes.count {
+            if let element = nodes[index] as? Element { return element }
+            index += step
+        }
+        return nil
+    }
+
+    private func indexInSiblingNodes(_ nodes: [Node]) throws -> Int {
+        let index = siblingIndex
+        if index >= 0, index < nodes.count, nodes[index] === self {
+            return index
+        }
+        // setSiblingIndex is public; preserve lookup behavior for a stale index.
+        let found = nodes.firstIndex { $0 === self }
+        try Validate.notNull(obj: found)
+        return found!
+    }
+
     /**
      Gets the first element sibling of this element.
      - returns: the first sibling that is an element (aka the parent's first element child)
      */
     public func firstElementSibling() -> Element? {
         // todo: should firstSibling() exclude this?
-        let siblings: Array<Element>? = parent()?.children().array()
+        let parent = parent()
+        if let parent {
+            let parentType = type(of: parent)
+            if parentType == Element.self || parentType == Document.self || parentType == FormElement.self {
+                var endpoint: Element?
+                for node in parent.childNodes {
+                    if let element = node as? Element {
+                        if let endpoint { return endpoint }
+                        endpoint = element
+                    }
+                }
+                return nil // Preserve the existing nil result for fewer than two elements.
+            }
+        }
+        let siblings: Array<Element>? = parent?.children().array()
         return (siblings != nil && siblings!.count > 1) ? siblings![0] : nil
     }
     
@@ -1184,7 +1284,25 @@ open class Element: Node {
      */
     public func elementSiblingIndex()throws->Int {
         if (parent() == nil) {return 0}
-        let x = try Element.indexInList(self, parent()?.children().array())
+        let parent = parent()
+        if let parent {
+            let parentType = type(of: parent)
+            if parentType == Element.self || parentType == Document.self || parentType == FormElement.self {
+                // Built-in parents expose childNodes in order. Count elements without
+                // allocating the complete filtered list or trusting siblingIndex.
+                var index = 0
+                for node in parent.childNodes {
+                    if let element = node as? Element {
+                        if element === self { return index }
+                        index += 1
+                    }
+                }
+                return 0
+            }
+        }
+        // Preserve custom parent()/children()/array() views, including a nil
+        // second parent() result and its original validation error.
+        let x = try Element.indexInList(self, parent?.children().array())
         return x == nil ? 0 : x!
     }
     
@@ -1194,7 +1312,21 @@ open class Element: Node {
      */
     @inline(__always)
     public func lastElementSibling() -> Element? {
-        let siblings: Array<Element>? = parent()?.children().array()
+        let parent = parent()
+        if let parent {
+            let parentType = type(of: parent)
+            if parentType == Element.self || parentType == Document.self || parentType == FormElement.self {
+                var endpoint: Element?
+                for node in parent.childNodes.reversed() {
+                    if let element = node as? Element {
+                        if let endpoint { return endpoint }
+                        endpoint = element
+                    }
+                }
+                return nil // Preserve the existing nil result for fewer than two elements.
+            }
+        }
+        let siblings: Array<Element>? = parent?.children().array()
         return (siblings != nil && siblings!.count > 1) ? siblings![siblings!.count - 1] : nil
     }
     
@@ -1270,9 +1402,9 @@ open class Element: Node {
      */
     @usableFromInline
     func getElementsById(_ id: [UInt8]) -> Elements {
-        let needsTrim = (id.first?.isWhitespace ?? false) || (id.last?.isWhitespace ?? false)
-        let keySlice = ByteSlice.fromArray(id)
-        let key = needsTrim ? keySlice.trim() : keySlice
+        // The parser has already removed selector syntax. Whitespace decoded
+        // from an escape is part of the ID, not query padding.
+        let key = ByteSlice.fromArray(id)
         if key.isEmpty {
             return Elements()
         }
@@ -1298,12 +1430,8 @@ open class Element: Node {
     public func getElementById(_ id: String) throws -> Element? {
         let idBytes = id.utf8Array
         try Validate.notEmpty(string: idBytes)
-        let needsTrim = (idBytes.first?.isWhitespace ?? false) || (idBytes.last?.isWhitespace ?? false)
-        let keySlice = ByteSlice.fromArray(idBytes)
-        let key = needsTrim ? keySlice.trim() : keySlice
-        if key.isEmpty {
-            return nil
-        }
+        // This API accepts a literal ID, not a CSS query: whitespace is significant.
+        let key = ByteSlice.fromArray(idBytes)
         if isIdQueryIndexDirty || normalizedIdIndex == nil {
             rebuildQueryIndexesForAllIds()
             isIdQueryIndexDirty = false
@@ -1410,6 +1538,15 @@ open class Element: Node {
         if key.isEmpty {
             return Elements()
         }
+        if key.starts(with: UTF8Arrays.absPrefix) {
+            // abs: attributes are computed from the base URI; the physical
+            // attribute-name index cannot determine whether they exist.
+            let elements = Elements()
+            traverseElementsDepthFirst { element in
+                if element.hasAttr(key) { elements.add(element) }
+            }
+            return elements
+        }
         if isAttributeQueryIndexDirty || normalizedAttributeNameIndex == nil {
             rebuildQueryIndexesForAllAttributes()
             isAttributeQueryIndexDirty = false
@@ -1454,10 +1591,10 @@ open class Element: Node {
                 lowerAscii(bytes[2]) == UTF8Arrays.absPrefix[2] &&
                 bytes[3] == UTF8Arrays.absPrefix[3]
         }
-        if hasAbsPrefix(keyBytes) {
+        let needsTrim = (keyBytes.first?.isWhitespace ?? false) || (keyBytes.last?.isWhitespace ?? false)
+        if hasAbsPrefix(needsTrim ? keyBytes.trim() : keyBytes) {
             return try Collector.collect(Evaluator.AttributeWithValue(key, value), self)
         }
-        let needsTrim = (keyBytes.first?.isWhitespace ?? false) || (keyBytes.last?.isWhitespace ?? false)
         let keySlice = ByteSlice.fromArray(keyBytes)
         let trimmedKeySlice = needsTrim ? keySlice.trim() : keySlice
         let normalizedKey = Attributes.containsAsciiUppercase(trimmedKeySlice) ? trimmedKeySlice.lowercased() : trimmedKeySlice
@@ -2374,22 +2511,29 @@ open class Element: Node {
     }
     
     /**
-     Get the combined data of this element. Data is e.g. the inside of a `script` tag.
+     Get the combined script/style data and comment contents in descendant document order.
+     Ordinary text and declaration nodes are excluded; whitespace is preserved.
      - returns: the data, or empty string if none
      - seealso: ``dataNodes()``
      */
     public func data() -> String {
-        let sb: StringBuilder = StringBuilder()
-        
-        for childNode: Node in childNodes {
-            if let data = (childNode as? DataNode) {
-                sb.append(data.getWholeDataUTF8())
-            } else if let element = (childNode as? Element) {
-                let elementData: String = element.data()
-                sb.append(elementData)
+        let accum = StringBuilder()
+        var pending = Array(childNodes.reversed())
+        while let node = pending.popLast() {
+            if let data = node as? DataNode {
+                if type(of: data) == DataNode.self {
+                    accum.append(data.wholeDataSlice())
+                } else {
+                    // Preserve public getter overrides on custom DataNode subclasses.
+                    accum.append(data.getWholeDataUTF8())
+                }
+            } else if let comment = node as? Comment {
+                accum.append(comment.getDataUTF8())
+            } else if let element = node as? Element {
+                pending.append(contentsOf: element.childNodes.reversed())
             }
         }
-        return sb.toString()
+        return accum.toString()
     }
     
     /**
@@ -2399,7 +2543,7 @@ open class Element: Node {
      */
     public func className() throws -> String {
         guard let attributes else { return "" }
-        let slice = try attributes.getIgnoreCaseSlice(key: Element.classString).trim()
+        let slice = Element.trimClassWhitespace(try attributes.getIgnoreCaseSlice(key: Element.classString))
         return String(decoding: slice, as: UTF8.self)
     }
     
@@ -2410,7 +2554,7 @@ open class Element: Node {
      */
     public func classNameUTF8() throws -> [UInt8] {
         guard let attributes else { return [] }
-        return try attributes.getIgnoreCaseSlice(key: Element.classString).trim().toArray()
+        return Element.trimClassWhitespace(try attributes.getIgnoreCaseSlice(key: Element.classString)).toArray()
     }
     
     /**
@@ -2430,13 +2574,13 @@ open class Element: Node {
         
         while i < len {
             // Skip any leading whitespace
-            while i < len && input[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(input[i]) {
                 i += 1
             }
             let start = i
             
             // Find the end of the class name
-            while i < len && !input[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(input[i]) {
                 i += 1
             }
             
@@ -2465,13 +2609,13 @@ open class Element: Node {
         
         while i < len {
             // Skip any leading whitespace
-            while i < len && input[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(input[i]) {
                 i += 1
             }
             let start = i
             
             // Find the end of the class name
-            while i < len && !input[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(input[i]) {
                 i += 1
             }
             
@@ -2496,11 +2640,11 @@ open class Element: Node {
         let len = utf8ClassName.count
         var i = 0
         while i < len {
-            while i < len && utf8ClassName[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(utf8ClassName[i]) {
                 i += 1
             }
             let start = i
-            while i < len && !utf8ClassName[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(utf8ClassName[i]) {
                 i += 1
             }
             if start < i {
@@ -2555,7 +2699,19 @@ open class Element: Node {
             return false
         }
         if len == wantLen {
-            return StringUtil.equalsIgnoreCase(className, classAttr)
+            // Equal-length attributes can still contain multiple classes or
+            // surrounding whitespace. An escaped class identifier must never
+            // match that entire class list as though it were one token.
+            return classAttr.withUnsafeBytes { bytes in
+                for i in bytes.indices {
+                    let byte = bytes[i]
+                    if StringUtil.isAsciiWhitespaceByte(byte) ||
+                        Attributes.asciiLowercase(byte) != Attributes.asciiLowercase(className[i]) {
+                        return false
+                    }
+                }
+                return true
+            }
         }
 
         @inline(__always)
@@ -2580,7 +2736,7 @@ open class Element: Node {
         var inToken = false
         while i < len {
             let b = classAttr[i]
-            if b.isWhitespace {
+            if StringUtil.isAsciiWhitespaceByte(b) {
                 if inToken {
                     let tokenLen = i - tokenStart
                     if tokenLen == wantLen && equalsIgnoreCaseSlice(classAttr, tokenStart, tokenLen, className) {
@@ -2840,6 +2996,7 @@ open class Element: Node {
     }
     
     override public func hash(into hasher: inout Hasher) {
+        // Equality requires node identity; changing the tag must not change the hash.
         super.hash(into: &hasher)
     }
 }
@@ -2895,6 +3052,24 @@ internal extension Element {
         }
     }
     
+    /// Invalidates all attribute-derived indexes in a single ancestor walk.
+    @usableFromInline
+    @inline(__always)
+    func markAttributeQueryIndexesDirty() {
+        guard !(treeBuilder?.isBulkBuilding ?? false) else { return }
+        var current: Node? = self
+        while let node = current {
+            if let element = node as? Element {
+                element.isClassQueryIndexDirty = true
+                element.isIdQueryIndexDirty = true
+                element.isAttributeQueryIndexDirty = true
+                element.isAttributeValueQueryIndexDirty = true
+                element.invalidateSelectorResultCache()
+            }
+            current = node.parentNode
+        }
+    }
+
     @usableFromInline
     @inline(__always)
     func markClassQueryIndexDirty() {
@@ -2964,12 +3139,11 @@ internal extension Element {
     @inline(__always)
     func cachedSelectorResult(_ query: String) -> Elements? {
         guard let cache = selectorResultCache else { return nil }
-        let root: Node
-        if let cachedRoot = selectorResultCacheRoot, cachedRoot.parentNode == nil {
-            root = cachedRoot
-        } else {
-            root = textMutationRoot()
-            selectorResultCacheRoot = root
+        // Versions belong to a particular tree. A released or reparented root
+        // cannot validate this snapshot, even if the new tree has the same version.
+        guard let root = selectorResultCacheRoot, root.parentNode == nil else {
+            invalidateSelectorResultCache()
+            return nil
         }
         let currentTextVersion = root.textMutationVersion
         if currentTextVersion != selectorResultTextVersion {
@@ -2979,7 +3153,9 @@ internal extension Element {
         }
         if let result = cache.get(query) {
             recordSelectorQuery(query, hit: true)
-            return result
+            // Results are mutable collections. Share their array storage, not the
+            // collection object, so callers cannot modify the cached snapshot.
+            return result.materialize(owner: self)
         }
         recordSelectorQuery(query, hit: false)
         return nil
@@ -2988,6 +3164,13 @@ internal extension Element {
     @usableFromInline
     @inline(__always)
     func storeSelectorResult(_ query: String, _ result: Elements) {
+        // A cached result must not retain its owner. Selectors visit the root
+        // first, so represent that leading element with a marker instead.
+        // Keep custom collections and nonstandard owner placement uncached.
+        guard type(of: result) == Elements.self else { return }
+        let elements = result.array()
+        let includesOwner = elements.first === self
+        guard !elements.dropFirst(includesOwner ? 1 : 0).contains(where: { $0 === self }) else { return }
         let hadCache = selectorResultCache != nil
         if selectorResultCache == nil {
             selectorResultCache = SelectorResultCache(capacity: Element.selectorResultCacheCapacity)
@@ -3010,7 +3193,10 @@ internal extension Element {
             selectorCacheBypassRemaining &-= 1
             return
         }
-        selectorResultCache?.put(query, result)
+        selectorResultCache?.put(query, SelectorResultCache.Result(
+            elements: includesOwner ? Array(elements.dropFirst()) : elements,
+            includesOwner: includesOwner
+        ))
     }
 
     @usableFromInline
@@ -3083,16 +3269,27 @@ internal extension Element {
         }
     }
 
+    // Class tokens use HTML ASCII whitespace; U+000B is part of a token.
+    private static func trimClassWhitespace(_ bytes: ByteSlice) -> ByteSlice {
+        return bytes.withUnsafeBytes { buffer in
+            var start = 0
+            var end = buffer.count
+            while start < end, StringUtil.isAsciiWhitespaceByte(buffer[start]) { start += 1 }
+            while start < end, StringUtil.isAsciiWhitespaceByte(buffer[end - 1]) { end -= 1 }
+            return bytes[start..<end]
+        }
+    }
+
     @inline(__always)
     private static func forEachClassName(in bytes: [UInt8], _ visitor: (ArraySlice<UInt8>) -> Void) {
         var i = 0
         let len = bytes.count
         while i < len {
-            while i < len && bytes[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 i &+= 1
             }
             let start = i
-            while i < len && !bytes[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 i &+= 1
             }
             if start < i {
@@ -3106,12 +3303,12 @@ internal extension Element {
         var i = 0
         let len = bytes.count
         while i < len {
-            while i < len && bytes[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 i &+= 1
             }
             let start = i
             var hasUppercase = false
-            while i < len && !bytes[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 let b = bytes[i]
                 if !hasUppercase && b >= 65 && b <= 90 {
                     hasUppercase = true
@@ -3129,12 +3326,12 @@ internal extension Element {
         var i = 0
         let len = bytes.count
         while i < len {
-            while i < len && bytes[i].isWhitespace {
+            while i < len && StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 i &+= 1
             }
             let start = i
             var hasUppercase = false
-            while i < len && !bytes[i].isWhitespace {
+            while i < len && !StringUtil.isAsciiWhitespaceByte(bytes[i]) {
                 let b = bytes[i]
                 if !hasUppercase && b >= 65 && b <= 90 {
                     hasUppercase = true
@@ -3221,10 +3418,12 @@ internal extension Element {
                 if let attrs = element.attributes,
                    let classValue = try? attrs.getIgnoreCaseSlice(key: Element.classString),
                    !classValue.isEmpty {
-                    let trimmed = classValue.trim()
-                    if !trimmed.isEmpty {
-                        Element.forEachClassNameWithUppercase(in: trimmed) { className, hasUppercase in
-                            let key = hasUppercase ? className.lowercased() : className
+                    Element.forEachClassNameWithUppercase(in: classValue) { className, hasUppercase in
+                        let key = hasUppercase ? className.lowercased() : className
+                        // One element may repeat a token (including case variants).
+                        // Its tokens are visited together, so only the last entry
+                        // needs checking; no per-element set or query dedup is needed.
+                        if classIndex[key]?.last?.value !== element {
                             classIndex[key, default: []].append(Weak(element))
                         }
                     }
@@ -3241,21 +3440,14 @@ internal extension Element {
             if needsAttributes || needsHotAttributes {
                 DebugTrace.log("rebuildQueryIndexesCombined: attrs for \(element.tagName())")
                 if let attrs = element.attributes {
-                    attrs.ensureMaterialized()
-                    let lowerKeys = attrs.hasUppercaseKeys
-                    for attr in attrs.attributes {
-                        DebugTrace.log("rebuildQueryIndexesCombined: attr key \(String(decoding: attr.getKeyUTF8(), as: UTF8.self))")
-                        let keySlice = attr.keySlice
-                        let key = lowerKeys ? attr.lowerKeySlice() : keySlice
+                    attrs.forEachEffectiveAttribute { attr, key in
                         if needsAttributes {
                             attributeIndex[key, default: []].append(Weak(element))
                         }
                         if needsHotAttributes,
                            (Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false)) {
                             let value = attr.lowerTrimmedValueSlice()
-                            var valueIndex = hotAttributeIndex[key] ?? [:]
-                            valueIndex[value, default: []].append(Weak(element))
-                            hotAttributeIndex[key] = valueIndex
+                            hotAttributeIndex[key, default: [:]][value, default: []].append(Weak(element))
                         }
                     }
                 }
@@ -3382,10 +3574,9 @@ internal extension Element {
             if let attrs = element.attributes,
                let classValue = try? attrs.getIgnoreCaseSlice(key: Element.classString),
                !classValue.isEmpty {
-                let trimmed = classValue.trim()
-                if !trimmed.isEmpty {
-                    Element.forEachClassNameWithUppercase(in: trimmed) { className, hasUppercase in
-                        let key = hasUppercase ? className.lowercased() : className
+                Element.forEachClassNameWithUppercase(in: classValue) { className, hasUppercase in
+                    let key = hasUppercase ? className.lowercased() : className
+                    if newIndex[key]?.last?.value !== element {
                         newIndex[key, default: []].append(Weak(element))
                     }
                 }
@@ -3461,11 +3652,7 @@ internal extension Element {
         
         traverseElementsDepthFirst { element in
             if let attrs = element.attributes {
-                attrs.ensureMaterialized()
-                let lowerKeys = attrs.hasUppercaseKeys
-                for attr in attrs.attributes {
-                    let keySlice = attr.keySlice
-                    let key = lowerKeys ? attr.lowerKeySlice() : keySlice
+                attrs.forEachEffectiveAttribute { attr, key in
                     newIndex[key, default: []].append(Weak(element))
                 }
             }
@@ -3502,16 +3689,10 @@ internal extension Element {
         newIndex.reserveCapacity(Element.hotAttributeIndexKeys.count + (dynamicKeys?.count ?? 0))
         traverseElementsDepthFirst { element in
             if let attrs = element.getAttributes() {
-                attrs.ensureMaterialized()
-                let lowerKeys = attrs.hasUppercaseKeys
-                for attr in attrs.attributes {
-                    let keySlice = attr.keySlice
-                    let key = lowerKeys ? attr.lowerKeySlice() : keySlice
-                    guard Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false) else { continue }
+                attrs.forEachEffectiveAttribute { attr, key in
+                    guard Element.isHotAttributeKey(key) || (dynamicKeys?.contains(key) ?? false) else { return }
                     let value = attr.lowerTrimmedValueSlice()
-                    var valueIndex = newIndex[key] ?? [:]
-                    valueIndex[value, default: []].append(Weak(element))
-                    newIndex[key] = valueIndex
+                    newIndex[key, default: [:]][value, default: []].append(Weak(element))
                 }
             }
         }

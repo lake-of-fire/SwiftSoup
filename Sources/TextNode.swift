@@ -137,12 +137,6 @@ open class TextNode: Node {
     @inline(__always)
     open func getWholeTextUTF8() -> [UInt8] {
         if let attrs = attributes {
-            if _textSlice != nil || _textSlices != nil {
-                materializeTextIfNeeded()
-                do {
-                    try attrs.put(TextNode.TEXT_KEY, _text)
-                } catch {}
-            }
             if let slice = attrs.valueSliceCaseSensitive(TextNode.TEXT_KEY) {
                 return slice.toArray()
             }
@@ -168,28 +162,11 @@ open class TextNode: Node {
 
     @usableFromInline
     internal func appendSlice(_ slice: ByteSlice) {
+        guard !slice.isEmpty else { return }
         if let attrs = attributes {
-            if !attrs.hasKey(key: TextNode.TEXT_KEY) {
-                if let slices = _textSlices {
-                    for existing in slices {
-                        attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: existing)
-                    }
-                    _textSlices = nil
-                    _textSlicesCount = 0
-                    _text = []
-                } else if let existingSlice = _textSlice {
-                    attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: existingSlice)
-                    _textSlice = nil
-                    _text = []
-                } else if !_text.isEmpty {
-                    attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: ByteSlice.fromArray(_text))
-                    _text = []
-                }
-            }
             attrs.appendValueSlice(key: TextNode.TEXT_KEY, slice: slice)
-        } else if var slices = _textSlices {
-            slices.append(slice)
-            _textSlices = slices
+        } else if _textSlices != nil {
+            _textSlices!.append(slice)
             _textSlicesCount += slice.count
         } else if let existingSlice = _textSlice {
             _textSlices = [existingSlice, slice]
@@ -239,43 +216,60 @@ open class TextNode: Node {
      */
     @inline(__always)
     open func isBlank() -> Bool {
+        if type(of: self) == TextNode.self {
+            // Keep the authoritative byte getter and its materialization behavior,
+            // but do not decode the whole value merely to test for ASCII whitespace.
+            return StringUtil.isBlankTextBytes(getWholeTextUTF8())
+        }
         return StringUtil.isBlank(getWholeText())
     }
 
     /**
-     Split this text node into two nodes at the specified string offset. After splitting, this node will contain the
-     original text up to the offset, and will have a new text node sibling containing the text after the offset.
-     - parameter offset: string offset point to split node at.
-     - returns: the newly created text node containing the text after the offset.
+     Split this text node at an extended grapheme cluster (Swift `Character`) offset.
+     The original node keeps the prefix; the returned node contains the suffix and
+     is inserted immediately after it when attached. An offset equal to the number
+     of characters is valid and creates an empty suffix.
+     - parameter offset: character offset, from zero through the character count
+     - returns: the newly created text node
+     - throws: if the offset is outside those bounds, without changing the tree
      */
     open func splitText(_ offset: Int) throws -> TextNode {
-        try Validate.isTrue(val: offset >= 0, msg: "Split offset must be not be negative")
-        let current = getWholeTextUTF8()
-        try Validate.isTrue(val: offset < current.count, msg: "Split offset must not be greater than current text length")
-
-        let head: String = getWholeText().substring(0, offset)
-        let tail: String = getWholeText().substring(offset)
-        text(head)
-        let tailNode: TextNode = TextNode(tail.utf8Array, self.getBaseUriUTF8())
-        if (parent() != nil) {
-            try parent()?.addChildren(siblingIndex+1, tailNode)
+        try Validate.isTrue(val: offset >= 0, msg: "Split offset must not be negative")
+        // Take one snapshot: subclasses may override the public getter.
+        let current = getWholeText()
+        guard let split = current.index(current.startIndex, offsetBy: offset, limitedBy: current.endIndex) else {
+            throw Exception.Error(type: ExceptionType.IllegalArgumentException,
+                                  Message: "Split offset must not exceed the character count")
         }
-        return tailNode
+        return try splitText(head: String(current[..<split]), tail: String(current[split...]))
     }
-    
+
+    /**
+     Split at an exact UTF-8 byte offset on a Unicode scalar boundary. This can
+     separate scalars within a grapheme (such as a letter and its combining mark).
+     Zero and the byte count are valid. Invalid UTF-8 or an offset inside a scalar
+     throws before the node or its parent is modified; bytes are never repaired.
+     */
     open func splitText(utf8Offset: Int) throws -> TextNode {
-        // Ensure UTF-8 offset is within valid bounds
         try Validate.isTrue(val: utf8Offset >= 0, msg: "Split UTF-8 offset must not be negative")
         let current = getWholeTextUTF8()
-        try Validate.isTrue(val: utf8Offset < current.count, msg: "Split UTF-8 offset must not exceed current text length in UTF-8 bytes")
-        
-        // Convert UTF-8 offset to extended grapheme cluster offset
-        let graphemeOffset = Substring(getWholeText().utf8.prefix(utf8Offset)).count
-        
-        // Validate grapheme cluster offset
-        try Validate.isTrue(val: graphemeOffset < current.count, msg: "Split grapheme cluster offset must not exceed current text length")
-        
-        return try splitText(graphemeOffset)
+        try Validate.isTrue(val: utf8Offset <= current.count,
+                            msg: "Split UTF-8 offset must not exceed the byte count")
+        guard let head = String(bytes: current[..<utf8Offset], encoding: .utf8),
+              let tail = String(bytes: current[utf8Offset...], encoding: .utf8) else {
+            throw Exception.Error(type: ExceptionType.IllegalArgumentException,
+                                  Message: "Split UTF-8 offset must separate valid Unicode scalar sequences")
+        }
+        return try splitText(head: head, tail: tail)
+    }
+
+    private func splitText(head: String, tail: String) throws -> TextNode {
+        let tailNode = TextNode(Array(tail.utf8), getBaseUriUTF8())
+        text(head)
+        if let parent = parent() {
+            try parent.addChildren(siblingIndex + 1, tailNode)
+        }
+        return tailNode
     }
 
     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {
@@ -382,16 +376,17 @@ open class TextNode: Node {
     // attribute fiddling. create on first access.
     @inline(__always)
     private func ensureAttributes() {
-        if (attributes == nil) {
-            attributes = Attributes()
-            do {
-                if let slice = _textSlice {
-                    _text = Array(slice)
-                    _textSlice = nil
-                }
-                try attributes?.put(TextNode.TEXT_KEY, _text)
-            } catch {}
-        }
+        guard attributes == nil else { return }
+        materializeTextIfNeeded()
+        let created = Attributes()
+        // Populate before attaching the owner: materialization is not a DOM edit.
+        try? created.put(TextNode.TEXT_KEY, _text)
+        attributes = created
+    }
+
+    internal override func ensureAttributesForWrite() -> Attributes {
+        ensureAttributes()
+        return attributes!
     }
 
     open override func attr(_ attributeKey: [UInt8]) throws -> [UInt8] {
@@ -417,6 +412,11 @@ open class TextNode: Node {
     open override func attr(_ attributeKey: String, _ attributeValue: String) throws -> Node {
         ensureAttributes()
         return try super.attr(attributeKey, attributeValue)
+    }
+
+    open override func hasAttr(_ attributeKey: [UInt8]) -> Bool {
+        ensureAttributes()
+        return super.hasAttr(attributeKey)
     }
 
     open override func hasAttr(_ attributeKey: String) -> Bool {

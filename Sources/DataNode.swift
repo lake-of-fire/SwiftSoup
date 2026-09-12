@@ -83,11 +83,8 @@ open class DataNode: Node {
 
     @inline(__always)
     open func getWholeDataUTF8() -> [UInt8] {
-        if let materialized = materializeRawDataIfNeeded() {
-            do {
-                try ensureAttributesForWrite().put(DataNode.DATA_KEY, materialized)
-            } catch {}
-            return materialized
+        if rawDataSlice != nil || rawDataSlices != nil {
+            _ = ensureDataAttributes()
         }
         guard let attributes = attributes else {
             return []
@@ -96,6 +93,40 @@ open class DataNode: Node {
             return slice.toArray()
         }
         return []
+    }
+
+    private func ensureDataAttributes() -> Attributes {
+        if let attributes { return attributes }
+        let bytes = materializeRawDataIfNeeded() ?? []
+        let created = Attributes()
+        // Populate before attaching, so reads do not dirty source or selector caches.
+        try? created.put(DataNode.DATA_KEY, bytes)
+        attributes = created
+        return created
+    }
+
+    internal override func ensureAttributesForWrite() -> Attributes {
+        return ensureDataAttributes()
+    }
+
+    open override func getAttributes() -> Attributes? {
+        return ensureDataAttributes()
+    }
+
+    open override func attr(_ attributeKey: [UInt8]) throws -> [UInt8] {
+        _ = ensureDataAttributes()
+        return try super.attr(attributeKey)
+    }
+
+    open override func hasAttr(_ attributeKey: [UInt8]) -> Bool {
+        _ = ensureDataAttributes()
+        return super.hasAttr(attributeKey)
+    }
+
+    @discardableResult
+    open override func removeAttr(_ attributeKey: [UInt8]) throws -> Node {
+        _ = ensureDataAttributes()
+        return try super.removeAttr(attributeKey)
     }
 
     @usableFromInline
@@ -115,23 +146,11 @@ open class DataNode: Node {
 
     @usableFromInline
     internal func appendSlice(_ slice: ByteSlice) {
+        guard !slice.isEmpty else { return }
         if let attrs = attributes {
-            if !attrs.hasKey(key: DataNode.DATA_KEY) {
-                if let slices = rawDataSlices {
-                    for existing in slices {
-                        attrs.appendValueSlice(key: DataNode.DATA_KEY, slice: existing)
-                    }
-                    rawDataSlices = nil
-                    rawDataSlicesCount = 0
-                } else if let existingSlice = rawDataSlice {
-                    attrs.appendValueSlice(key: DataNode.DATA_KEY, slice: existingSlice)
-                    rawDataSlice = nil
-                }
-            }
             attrs.appendValueSlice(key: DataNode.DATA_KEY, slice: slice)
-        } else if var slices = rawDataSlices {
-            slices.append(slice)
-            rawDataSlices = slices
+        } else if rawDataSlices != nil {
+            rawDataSlices!.append(slice)
             rawDataSlicesCount += slice.count
         } else if let existingSlice = rawDataSlice {
             rawDataSlices = [existingSlice, slice]
@@ -140,6 +159,7 @@ open class DataNode: Node {
         } else {
             rawDataSlice = slice
         }
+        if attributes == nil { bumpTextMutationVersion() }
         markSourceDirty()
     }
 
