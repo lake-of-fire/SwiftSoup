@@ -136,7 +136,9 @@ open class CssSelector {
         DebugTrace.log("CssSelector.select(query): slow path")
         let evaluator = try cachedEvaluatorTrimmed(query)
         let result = try select(evaluator, root)
-        root.storeSelectorResult(query, result)
+        if root.parentNode == nil || !dependsOnFollowingSiblings(evaluator) {
+            root.storeSelectorResult(query, result)
+        }
         return result
     }
 
@@ -196,7 +198,8 @@ open class CssSelector {
         }
         let evaluator: Evaluator = try cachedEvaluatorTrimmed(query)
         let result = try self.select(evaluator, roots)
-        if roots.count == 1, let root = roots.first {
+        if roots.count == 1, let root = roots.first,
+           root.parentNode == nil || !dependsOnFollowingSiblings(evaluator) {
             root.storeSelectorResult(query, result)
         }
         return result
@@ -241,6 +244,20 @@ open class CssSelector {
         return try Collector.collect(evaluator, root)
     }
     
+    // Attribute changes outside a selection subtree do not invalidate its result
+    // cache. Sibling-relative :has can observe those changes, so retain parsed
+    // evaluator caching but bypass result snapshots for attached subtree roots.
+    private static func dependsOnFollowingSiblings(_ evaluator: Evaluator) -> Bool {
+        if let has = evaluator as? StructuralEvaluator.Has, has.searchesFollowingSiblings { return true }
+        if let combined = evaluator as? CombiningEvaluator {
+            return combined.evaluators.contains(where: dependsOnFollowingSiblings)
+        }
+        if let structural = evaluator as? StructuralEvaluator {
+            return dependsOnFollowingSiblings(structural.evaluator)
+        }
+        return false
+    }
+
     private static func cachedEvaluatorTrimmed(_ query: String) throws -> Evaluator {
         let key = SelectorQueryKey(query)
         selectorCache.lock.lock()

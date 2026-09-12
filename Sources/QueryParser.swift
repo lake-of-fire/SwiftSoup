@@ -346,7 +346,14 @@ public class QueryParser {
         try tq.consume(":has")
         let subQuery: String = tq.chompBalanced("(", ")")
         try Validate.notEmpty(string: subQuery, msg: ":has(el) subselect must not be empty")
-        evals.append(StructuralEvaluator.Has(try QueryParser.parse(subQuery)))
+        let branches = try TokenQueue(subQuery).consumeCssSelectorList().map { branch -> Evaluator in
+            let query = TokenQueue.trimCssQuery(branch)
+            try Validate.notEmpty(string: query, msg: ":has selector-list branch must not be empty")
+            let leadingByte = query.utf8.first
+            let followsSiblings = leadingByte == 0x2B || leadingByte == 0x7E // + or ~
+            return StructuralEvaluator.Has(try QueryParser.parse(query), followingSiblings: followsSiblings)
+        }
+        evals.append(branches.count == 1 ? branches[0] : CombiningEvaluator.Or(branches))
     }
 
     // pseudo selector :contains(text), containsOwn(text)
