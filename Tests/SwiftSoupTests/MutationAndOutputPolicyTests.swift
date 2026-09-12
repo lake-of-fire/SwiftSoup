@@ -51,15 +51,41 @@ final class MutationAndOutputPolicyTests: XCTestCase {
         XCTAssertEqual(try right.select("#last").size(), 1)
     }
 
-    func testCopiedAttributesNotifyOriginalAndClone() throws {
-        let original = try SwiftSoup.parse("<p data-x='one'>text</p>")
-        let cloned = original.copy() as! Document
-        for doc in [original, cloned] { XCTAssertEqual(try doc.select("[data-x=one]").size(), 1) }
-        let attribute = try XCTUnwrap(original.select("p").first()?.getAttributes()?.asList().first)
-        attribute.setValue(value: Array("two".utf8))
-        for doc in [original, cloned] {
-            XCTAssertEqual(try doc.select("[data-x=one]").size(), 0)
-            XCTAssertEqual(try doc.select("[data-x=two]").size(), 1)
+    func testCopiedAttributesAreIndependentAndNotifyOnlyTheirOwnDocument() throws {
+        for materializeBeforeCopy in [false, true] {
+            let original = try SwiftSoup.parse("<p data-x='one'>text</p>")
+            original.outputSettings().prettyPrint(pretty: false)
+            if materializeBeforeCopy {
+                let attributes = try XCTUnwrap(original.select("p").first()?.getAttributes())
+                _ = attributes.asList()
+            }
+            let cloned = try XCTUnwrap(original.copy() as? Document)
+            cloned.outputSettings().prettyPrint(pretty: false)
+            let originalAttribute = try XCTUnwrap(original.select("p").first()?.getAttributes()?.asList().first)
+            let clonedAttribute = try XCTUnwrap(cloned.select("p").first()?.getAttributes()?.asList().first)
+            XCTAssertFalse(originalAttribute === clonedAttribute)
+
+            // Prime both indexes before mutating either document.
+            for doc in [original, cloned] {
+                XCTAssertEqual(try doc.select("[data-x=one]").size(), 1)
+            }
+            originalAttribute.setValue(value: Array("two".utf8))
+            XCTAssertEqual(try original.select("[data-x=one]").size(), 0)
+            XCTAssertEqual(try original.select("[data-x=two]").size(), 1)
+            XCTAssertEqual(try cloned.select("[data-x=one]").size(), 1)
+            XCTAssertEqual(try cloned.select("[data-x=two]").size(), 0)
+
+            clonedAttribute.setValue(value: Array("three".utf8))
+            XCTAssertEqual(try original.select("[data-x=two]").size(), 1)
+            XCTAssertEqual(try original.select("[data-x=three]").size(), 0)
+            XCTAssertEqual(try cloned.select("[data-x=one]").size(), 0)
+            XCTAssertEqual(try cloned.select("[data-x=two]").size(), 0)
+            XCTAssertEqual(try cloned.select("[data-x=three]").size(), 1)
+
+            let reparsedOriginal = try SwiftSoup.parse(original.outerHtml())
+            let reparsedClone = try SwiftSoup.parse(cloned.outerHtml())
+            XCTAssertEqual(try reparsedOriginal.select("p").attr("data-x"), "two")
+            XCTAssertEqual(try reparsedClone.select("p").attr("data-x"), "three")
         }
     }
 
