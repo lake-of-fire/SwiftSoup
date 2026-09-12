@@ -111,4 +111,14 @@ final class RegionCursorTest: XCTestCase {
         XCTAssertEqual(Array(q.toString().utf8), Array("e\u{301}X".utf8))
     }
 
+    func testActualSelectorsAndMutationRetainOutputs() throws {
+        let doc = try SwiftSoup.parse("<main><p id='a' class='日本語'>École</p><p id='b'>other</p></main>")
+        for _ in 0..<4 {
+            XCTAssertEqual(try doc.select("MAIN > P.日本語:contains(école)").array().map { $0.id() }, ["a"])
+            XCTAssertEqual(try doc.select("main > p:nth-child(2n + 1)").array().map { $0.id() }, ["a"])
+        }
+        try doc.getElementById("a")!.text("changed")
+        XCTAssertTrue(try doc.select("MAIN > P.日本語:contains(école)").isEmpty())
+        XCTAssertEqual(try doc.select("main > p:contains(changed)").array().map { $0.id() }, ["a"])
+    }
 }

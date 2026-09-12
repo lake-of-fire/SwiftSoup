@@ -118,4 +118,15 @@ final class StringSearchBoundaryTest: XCTestCase {
         }
     }
 
+    func testLongNumericSelectorParsingAndSelection() throws {
+        let saved = QueryParser.cache
+        QueryParser.cache = nil
+        defer { QueryParser.cache = saved }
+        let root = try SwiftSoup.parse("<ul><li>a</li><li>b</li><li>c</li></ul>")
+        for count in [1, 64, 512, 2048] {
+            let query = "li:eq(" + String(repeating: "0", count: count) + "1)"
+            let eval = try QueryParser.parse(query)
+            XCTAssertEqual(try root.select(eval).text(), "b")
+        }
+    }
 }

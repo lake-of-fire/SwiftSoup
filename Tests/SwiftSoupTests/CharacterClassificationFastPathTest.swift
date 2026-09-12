@@ -96,6 +96,18 @@ final class CharacterClassificationFastPathTest: XCTestCase {
         }
     }
 
+    func testSelectorResultsSurviveWarmupAndMutation() throws {
+        let document = try SwiftSoup.parse("<main><section id='s'><p id='a'>日本語</p><p id='b'>two</p></section></main>")
+        let query = "main > section p:nth-child(2n + 1)"
+        for _ in 0..<3 { XCTAssertEqual(try document.select(query).array().map { $0.id() }, ["a"]) }
+        let before = try document.outerHtml()
+        _ = try QueryParser.parse("main > section.article:nth-child(2n + 1) p:contains(日本語)")
+        XCTAssertEqual(try document.outerHtml(), before)
+        let section = try XCTUnwrap(document.getElementById("s"))
+        try section.prepend("<p id='c'>added</p>")
+        XCTAssertEqual(try document.select(query).array().map { $0.id() }, ["c", "b"])
+    }
+
     func testEveryASCIIStarterWithCombiningSuffixesUsesFullCharacter() {
         let marks = Array(UInt32(0x0300)...UInt32(0x036F)) + [0x200D, 0x20E3, 0xFE0E, 0xFE0F]
         let memberships: [CharacterSet] = [.letters, .decimalDigits, .nonBaseCharacters,
