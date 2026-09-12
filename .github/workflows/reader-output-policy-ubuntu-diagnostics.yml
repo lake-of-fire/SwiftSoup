@@ -1,0 +1,53 @@
+name: Reader output-policy Ubuntu diagnostics
+
+on:
+  push:
+    branches:
+      - fix/upstream-reader-output-policy-20260912
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-scope:
+    name: source-scope
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify production source scope
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BASE=6778a6db3e1dc95a33fb16918c79221ea2db9000
+          git diff --name-only "$BASE"...HEAD
+          test "$(git diff --name-only "$BASE"...HEAD -- Sources | sort | tr '\n' ' ')" = "Sources/Document.swift Sources/Node.swift "
+
+  mutation-output-policy:
+    name: mutation-output-policy
+    needs: source-scope
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run MutationAndOutputPolicyTests
+        run: swift test --filter MutationAndOutputPolicyTests
+
+  reader-document-output:
+    name: reader-document-output
+    needs: source-scope
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ReaderDocumentOutputTests
+        run: swift test --filter ReaderDocumentOutputTests
+
+  full-suite:
+    name: full-suite
+    needs: source-scope
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run full package suite
+        run: swift test
