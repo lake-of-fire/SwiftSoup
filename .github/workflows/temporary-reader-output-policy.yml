@@ -1,0 +1,47 @@
+name: Temporary Reader output policy convergence
+
+on:
+  push:
+    branches:
+      - codex/swiftsoup-reader-output-policy-probe-20260912
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile-and-test:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply Reader document policies over current upstream
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name reader-policy-bot
+          git config user.email reader-policy-bot@example.invalid
+          git remote add upstream https://github.com/scinfu/SwiftSoup.git || true
+          git fetch upstream c3630ff2e2ac90766a8ef87581d63b9ebb8ef1b4 a8d78ecb72e53ffdaa32d6180c5ed14ce083115d
+          git checkout -B codex/swiftsoup-reader-output-policy-candidate-20260912 708e2e79bfe7f8571f000e91b23151bb1c202028
+          git cherry-pick -Xtheirs c3630ff2e2ac90766a8ef87581d63b9ebb8ef1b4
+          git cherry-pick -Xtheirs a8d78ecb72e53ffdaa32d6180c5ed14ce083115d
+          # Upstream #412-#419 already carries the newer attribute ownership/index semantics.
+          # Keep those exact upstream files while retaining the Reader Document/Node/output-policy work.
+          git restore --source=708e2e79bfe7f8571f000e91b23151bb1c202028 -- Sources/Attribute.swift Sources/Attributes.swift
+          if ! git diff --quiet; then
+            git add Sources/Attribute.swift Sources/Attributes.swift
+            git commit -m 'Retain current upstream attribute ownership implementation'
+          fi
+          test "$(git hash-object Sources/Attribute.swift)" = 7bae099e5e820a9f3f3ddce076cf9130d498dbe8
+          test "$(git hash-object Sources/Attributes.swift)" = 98408697e2fd36b024994d4e7da2eed82c5ada3e
+          git diff --stat 708e2e79bfe7f8571f000e91b23151bb1c202028..HEAD
+      - name: Run full package tests
+        run: swift test
+      - name: Run focused document and mutation policy tests
+        run: |
+          swift test --filter DocumentTest
+          swift test --filter MutationAndOutputPolicyTests
+      - name: Publish only after all tests pass
+        run: git push origin HEAD:refs/heads/codex/swiftsoup-reader-output-policy-candidate-20260912
