@@ -505,7 +505,9 @@ open class Node: Equatable, Hashable {
         var node: Node? = self
         while let current = node {
             if let document = current as? Document {
-                return document
+                // Preserve the historical virtual dispatch at the owning
+                // Document while keeping the ancestor walk itself iterative.
+                return document.ownerDocument()
             }
             node = current.parentNode
         }
