@@ -166,3 +166,5 @@ open func ownerDocument() -> Document? {
           git add Sources/Node.swift Tests/SwiftSoupTests/ReaderDocumentOutputTests.swift .github/workflows/pr45-compatibility-repair.yml
           git commit -m "Preserve subclass semantics in stack-safe output paths"
           git push origin HEAD:fix/upstream-reader-output-policy-20260912
+
+# trigger existing workflow after initial add
