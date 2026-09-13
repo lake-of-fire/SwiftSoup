@@ -37,51 +37,28 @@ final class ReaderDocumentOutputTests: XCTestCase {
             + "original" + String(repeating: "</span>", count: depth) + "</body></html>"
         let done = DispatchSemaphore(value: 0)
         let thread = Thread {
-            func mark(_ stage: String) {
-                FileHandle.standardError.write(Data("ReaderDocumentOutput deep stage: \(stage)\n".utf8))
-            }
-            defer {
-                mark("thread-defer")
-                done.signal()
-            }
+            defer { done.signal() }
             do {
-                mark("parse-original-begin")
                 let document = try SwiftSoup.parse(html)
-                mark("parse-original-end")
                 document.outputSettings().prettyPrint(pretty: true).indentAmount(indentAmount: 0)
-                mark("pretty-serialize-begin")
                 let pretty = try document.outerHtml()
-                mark("pretty-serialize-end")
                 let prettyDocument = try SwiftSoup.parse(pretty)
-                mark("pretty-reparse-end")
                 XCTAssertEqual(try prettyDocument.body()?.text(), "original")
-                mark("pretty-text-end")
 
                 document.outputSettings().prettyPrint(pretty: false)
-                mark("clean-utf8-begin")
                 XCTAssertEqual(String(decoding: try document.outerHtmlUTF8(), as: UTF8.self), html)
-                mark("clean-utf8-end")
                 var deepest: Node = try XCTUnwrap(document.body())
                 while let child = deepest.getChildNodes().first { deepest = child }
-                mark("deepest-end")
                 let text = try XCTUnwrap(deepest as? TextNode)
                 XCTAssertTrue(text.ownerDocument() === document)
-                mark("owner-document-end")
                 text.text("updated")
-                mark("mutation-end")
                 let sourceReuse = try document.outerHtmlUTF8()
-                mark("dirty-source-reuse-serialize-end")
                 let noSourceReuse = try document.outerHtmlUTF8WithoutSourceReuse()
-                mark("dirty-no-source-reuse-serialize-end")
                 for bytes in [sourceReuse, noSourceReuse] {
                     let reparsed = try SwiftSoup.parse(String(decoding: bytes, as: UTF8.self))
-                    mark("dirty-reparse-end")
                     XCTAssertEqual(try reparsed.body()?.text(), "updated")
-                    mark("dirty-text-end")
                     XCTAssertEqual(try reparsed.select("span").count, depth)
-                    mark("dirty-select-end")
                 }
-                mark("body-end")
             } catch {
                 XCTFail("Deep serialization failed: \(error)")
             }
