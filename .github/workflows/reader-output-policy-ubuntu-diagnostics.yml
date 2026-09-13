@@ -7,51 +7,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  repair-semantics:
-    name: repair-semantics
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Restore open-dispatch and dirty propagation contracts
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('Sources/Node.swift')
-          source = path.read_text()
-
-          old_owner = '''    @inline(__always)\n    open func ownerDocument() -> Document? {\n        var current: Node? = self\n        while let node = current {\n            if let document = node as? Document { return document }\n            current = node.parentNode\n        }\n        return nil\n    }\n'''
-          new_owner = '''    @inline(__always)\n    open func ownerDocument() -> Document? {\n        if let document = self as? Document {\n            return document\n        }\n        return parentNode?.ownerDocument()\n    }\n'''
-
-          old_dirty = '''    @inline(__always)\n    @usableFromInline\n    internal func markSourceDirty(force: Bool = false) {\n        markSourceDirty(force: force, registerDirtyRoot: true)\n    }\n\n    @inline(__always)\n    @usableFromInline\n    internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {\n        if !sourceRangeDirty, !force, treeBuilder?.isBulkBuilding == true { return }\n        if registerDirtyRoot {\n            sourceRangeDirty = true\n            ownerDocument()?.registerDirtySourceRoot(self)\n        }\n        var current: Node? = registerDirtyRoot ? parentNode : self\n        while let node = current {\n            if node.sourceRangeDirty { break }\n            if !force, node.treeBuilder?.isBulkBuilding == true { break }\n            node.sourceRangeDirty = true\n            current = node.parentNode\n        }\n    }\n'''
-          new_dirty = '''    @inline(__always)\n    @usableFromInline\n    internal func markSourceDirty(force: Bool = false) {\n        if sourceRangeDirty {\n            ownerDocument()?.registerDirtySourceRoot(self)\n            return\n        }\n        if !force, treeBuilder?.isBulkBuilding == true {\n            return\n        }\n        sourceRangeDirty = true\n        ownerDocument()?.registerDirtySourceRoot(self)\n        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)\n    }\n\n    @inline(__always)\n    @usableFromInline\n    internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {\n        if sourceRangeDirty {\n            if registerDirtyRoot {\n                ownerDocument()?.registerDirtySourceRoot(self)\n            }\n            return\n        }\n        if !force, treeBuilder?.isBulkBuilding == true {\n            return\n        }\n        sourceRangeDirty = true\n        if registerDirtyRoot {\n            ownerDocument()?.registerDirtySourceRoot(self)\n        }\n        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)\n    }\n'''
-
-          if source.count(old_owner) != 1:
-              raise SystemExit(f'ownerDocument preimage count={source.count(old_owner)}')
-          if source.count(old_dirty) != 1:
-              raise SystemExit(f'markSourceDirty preimage count={source.count(old_dirty)}')
-
-          source = source.replace(old_owner, new_owner, 1).replace(old_dirty, new_dirty, 1)
-          path.write_text(source)
-          PY
-          git diff --check
-          swift test --filter 'OwnerDocumentLookupTest|SiblingReindexTest|FragmentSourceAppendTest.testStructuralDirtyingMatchesReferenceAcrossCoverageAndExistingFlags'
-          git config user.name compatibility-repair-bot
-          git config user.email compatibility-repair-bot@example.invalid
-          git add Sources/Node.swift
-          git commit -m 'Restore Node override and dirty propagation semantics'
-          git push origin HEAD:fix/upstream-reader-output-policy-20260912
-
   source-scope:
     name: source-scope
-    needs: repair-semantics
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
