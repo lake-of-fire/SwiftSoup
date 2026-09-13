@@ -1,0 +1,45 @@
+name: Compose qualified Reader output policy onto master
+
+on:
+  push:
+    branches:
+      - codex/reader-output-policy-master-20260913
+
+permissions:
+  contents: write
+
+jobs:
+  compose:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/reader-output-policy-master-20260913
+          fetch-depth: 0
+      - name: Apply qualified source delta and tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BASE=6778a6db3e1dc95a33fb16918c79221ea2db9000
+          CANDIDATE=72a1a23315dab063c635de1a54856885d254394c
+          if grep -q 'ownerDocumentForInternalLookup' Sources/Node.swift; then
+            echo 'Qualified source delta already composed'
+            exit 0
+          fi
+          git fetch origin "$BASE" "$CANDIDATE"
+          git diff "$BASE" "$CANDIDATE" -- Sources/Document.swift Sources/Node.swift > /tmp/qualified-reader-output.patch
+          git apply --3way /tmp/qualified-reader-output.patch
+          git show "$CANDIDATE":Tests/SwiftSoupTests/MutationAndOutputPolicyTests.swift > Tests/SwiftSoupTests/MutationAndOutputPolicyTests.swift
+          git show "$CANDIDATE":Tests/SwiftSoupTests/ReaderDocumentOutputTests.swift > Tests/SwiftSoupTests/ReaderDocumentOutputTests.swift
+          git diff --check
+          swift test --filter MutationAndOutputPolicyTests
+          swift test --filter ReaderDocumentOutputTests
+          swift test --filter FragmentIndexConstructionTest
+          swift test --filter FragmentSourceAppendTest
+          swift test --filter StackOverflow393Test
+          swift test
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Sources/Document.swift Sources/Node.swift Tests/SwiftSoupTests/MutationAndOutputPolicyTests.swift Tests/SwiftSoupTests/ReaderDocumentOutputTests.swift
+          git commit -m 'Transplant qualified Reader output policy onto master'
+          git push origin HEAD:codex/reader-output-policy-master-20260913
