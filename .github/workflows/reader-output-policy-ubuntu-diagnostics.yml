@@ -24,8 +24,6 @@ jobs:
           BASE=6778a6db3e1dc95a33fb16918c79221ea2db9000
           git diff --name-only "$BASE"...HEAD
           test "$(git diff --name-only "$BASE"...HEAD -- Sources | sort | tr '\n' ' ')" = "Sources/Document.swift Sources/Node.swift "
-          echo "=== Node/Element subclasses ==="
-          grep -RE "^[[:space:]]*(open |public |internal |private |fileprivate |final )*class [A-Za-z0-9_]+[[:space:]]*:[[:space:]]*(Node|Element)" Sources || true
 
   mutation-output-policy:
     name: mutation-output-policy
@@ -76,5 +74,3 @@ jobs:
           ref: 6778a6db3e1dc95a33fb16918c79221ea2db9000
       - name: Run upstream baseline package suite
         run: swift test
-
-# Repaired-head qualification trigger.
