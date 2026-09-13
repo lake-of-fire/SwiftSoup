@@ -496,18 +496,34 @@ open class Node: Equatable, Hashable {
         return parentNode?.ownerDocument()
     }
 
-    /// Internal stack-safe lookup for source tracking and deep serialization.
-    /// This deliberately follows stored parent links rather than changing the
-    /// open `ownerDocument()` dispatch contract for subclasses.
+    /// Internal stack-safe owner lookup for source tracking and source reuse.
+    ///
+    /// Built-in SwiftSoup node types use the default `ownerDocument()` semantics,
+    /// so their stored parent chain can be walked iteratively. At a subclass
+    /// boundary, resume virtual dispatch so custom owner redirection and
+    /// observation remain part of the public contract.
     @inline(__always)
     @usableFromInline
-    internal func ownerDocumentDirect() -> Document? {
+    internal func ownerDocumentForInternalLookup() -> Document? {
         var node: Node? = self
         while let current = node {
             if let document = current as? Document {
-                // Preserve the historical virtual dispatch at the owning
-                // Document while keeping the ancestor walk itself iterative.
                 return document.ownerDocument()
+            }
+
+            let currentType = type(of: current)
+            let isBuiltIn =
+                currentType == Node.self ||
+                currentType == Element.self ||
+                currentType == FormElement.self ||
+                currentType == TextNode.self ||
+                currentType == DataNode.self ||
+                currentType == Comment.self ||
+                currentType == DocumentType.self ||
+                currentType == XmlDeclaration.self
+
+            if !isBuiltIn {
+                return current.ownerDocument()
             }
             node = current.parentNode
         }
@@ -551,38 +567,38 @@ open class Node: Equatable, Hashable {
     }
 
     @inline(__always)
-@usableFromInline
-internal func markSourceDirty(force: Bool = false) {
-    markSourceDirty(force: force, registerDirtyRoot: true)
-}
-
-@inline(__always)
-@usableFromInline
-internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
-    var node: Node? = self
-    var shouldRegisterDirtyRoot = registerDirtyRoot
-    while let current = node {
-        if current.sourceRangeDirty {
-  if shouldRegisterDirtyRoot {
-      current.ownerDocumentDirect()?.registerDirtySourceRoot(current)
-  }
-  return
-        }
-        if !force, current.treeBuilder?.isBulkBuilding == true {
-  return
-        }
-        current.sourceRangeDirty = true
-        if shouldRegisterDirtyRoot {
-  current.ownerDocumentDirect()?.registerDirtySourceRoot(current)
-  shouldRegisterDirtyRoot = false
-        }
-        node = current.parentNode
+    @usableFromInline
+    internal func markSourceDirty(force: Bool = false) {
+        markSourceDirty(force: force, registerDirtyRoot: true)
     }
-}
 
-@inline(__always)
-@usableFromInline
-internal func setSourceRange(_ range: SourceRange, complete: Bool) {
+    @inline(__always)
+    @usableFromInline
+    internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
+        var node: Node? = self
+        var shouldRegisterDirtyRoot = registerDirtyRoot
+        while let current = node {
+            if current.sourceRangeDirty {
+                if shouldRegisterDirtyRoot {
+                    current.ownerDocumentForInternalLookup()?.registerDirtySourceRoot(current)
+                }
+                return
+            }
+            if !force, current.treeBuilder?.isBulkBuilding == true {
+                return
+            }
+            current.sourceRangeDirty = true
+            if shouldRegisterDirtyRoot {
+                current.ownerDocumentForInternalLookup()?.registerDirtySourceRoot(current)
+                shouldRegisterDirtyRoot = false
+            }
+            node = current.parentNode
+        }
+    }
+
+    @inline(__always)
+    @usableFromInline
+    internal func setSourceRange(_ range: SourceRange, complete: Bool) {
         sourceRange = range
         sourceRangeIsComplete = complete
         sourceRangeDirty = false
@@ -1101,7 +1117,7 @@ internal func setSourceRange(_ range: SourceRange, complete: Bool) {
               sourceRangeIsComplete,
               let range = sourceRange,
               range.isValid,
-              let doc = ownerDocumentDirect(),
+              let doc = ownerDocumentForInternalLookup(),
               let source = sourceBuffer?.bytes ?? doc.sourceBuffer?.bytes
         else {
             return nil
@@ -1117,7 +1133,7 @@ internal func setSourceRange(_ range: SourceRange, complete: Bool) {
     internal func sourceSliceUTF8() -> ArraySlice<UInt8>? {
         guard let range = sourceRange,
               range.isValid,
-              let source = sourceBuffer?.bytes ?? ownerDocument()?.sourceBuffer?.bytes,
+              let source = sourceBuffer?.bytes ?? ownerDocumentForInternalLookup()?.sourceBuffer?.bytes,
               range.end <= source.count
         else {
             return nil
