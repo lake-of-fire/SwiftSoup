@@ -74,3 +74,5 @@ jobs:
           ref: 6778a6db3e1dc95a33fb16918c79221ea2db9000
       - name: Run upstream baseline package suite
         run: swift test
+
+# Repaired-head qualification trigger.
