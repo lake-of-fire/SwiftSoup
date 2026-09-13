@@ -1,7 +1,5 @@
 name: macOS Swift
 
-
-
 on:
   push:
     branches: [ "master" ]
@@ -14,7 +12,7 @@ jobs:
     strategy:
       matrix:
         os: [macos-15]
-        
+
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -24,4 +22,19 @@ jobs:
     - name: Build
       run: swift build -v
     - name: Run tests
-      run: swift test -v
+      shell: bash
+      run: |
+        set +e
+        swift test -v > /tmp/swift-test.log 2>&1
+        status=$?
+        if [ "$status" -ne 0 ]; then
+          echo "=== assertion / error lines ==="
+          grep -nE "error:|XCTAssert|failed -|failed:|Test Case .*failed|unexpected signal|Segmentation fault|Bus error" /tmp/swift-test.log | head -n 1000 || true
+          echo "=== all failed test lifecycle lines ==="
+          grep -E "Test (Case|Suite) .* failed" /tmp/swift-test.log || true
+          echo "=== last test lifecycle lines ==="
+          grep -E "Test (Case|Suite) .* (started|passed|failed)|Exited with unexpected signal|Signal|Segmentation fault|Bus error" /tmp/swift-test.log | tail -n 240 || true
+          echo "=== final full-suite output ==="
+          tail -n 500 /tmp/swift-test.log || true
+        fi
+        exit "$status"

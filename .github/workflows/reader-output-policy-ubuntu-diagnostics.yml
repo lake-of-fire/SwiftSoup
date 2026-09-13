@@ -1,0 +1,76 @@
+name: Reader output-policy Ubuntu diagnostics
+
+on:
+  push:
+    branches:
+      - fix/upstream-reader-output-policy-20260912
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-scope:
+    name: source-scope
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify production source scope
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BASE=6778a6db3e1dc95a33fb16918c79221ea2db9000
+          git diff --name-only "$BASE"...HEAD
+          test "$(git diff --name-only "$BASE"...HEAD -- Sources | sort | tr '\n' ' ')" = "Sources/Document.swift Sources/Node.swift "
+
+  mutation-output-policy:
+    name: mutation-output-policy
+    needs: source-scope
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run MutationAndOutputPolicyTests
+        run: swift test --filter MutationAndOutputPolicyTests
+
+  reader-document-output:
+    name: reader-document-output
+    needs: source-scope
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ReaderDocumentOutputTests
+        run: swift test --filter ReaderDocumentOutputTests
+
+  full-suite:
+    name: full-suite
+    needs: source-scope
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run full package suite and expose failure context
+        shell: bash
+        run: |
+          set +e
+          swift test -v > /tmp/swift-test.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "=== assertion / error lines ==="
+            grep -nE "error:|XCTAssert|failed -|failed:|Test Case .*failed|unexpected signal|Segmentation fault|Bus error" /tmp/swift-test.log | head -n 500 || true
+            echo "=== last test lifecycle lines ==="
+            grep -E "Test (Case|Suite) .* (started|passed|failed)|Exited with unexpected signal|Signal|Segmentation fault|Bus error" /tmp/swift-test.log | tail -n 240 || true
+            echo "=== final full-suite output ==="
+            tail -n 500 /tmp/swift-test.log || true
+          fi
+          exit "$status"
+
+  baseline-full-suite:
+    name: baseline-full-suite
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 6778a6db3e1dc95a33fb16918c79221ea2db9000
+      - name: Run upstream baseline package suite
+        run: swift test
