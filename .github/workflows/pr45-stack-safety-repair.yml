@@ -21,101 +21,65 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
 
           path = Path('Sources/Node.swift')
           text = path.read_text()
 
-          old_owner = '''    @inline(__always)
-              open func ownerDocument() -> Document? {
-                  if let document = self as? Document {
+          owner_pattern = r'''    @inline\(__always\)\n    open func ownerDocument\(\) -> Document\? \{.*?\n    \}\n\n    /// A token'''
+          owner_replacement = '''    @inline(__always)
+          open func ownerDocument() -> Document? {
+              var node: Node? = self
+              while let current = node {
+                  if let document = current as? Document {
                       return document
                   }
-                  return parentNode?.ownerDocument()
+                  node = current.parentNode
               }
-          '''.replace('              ', '')
-          new_owner = '''    @inline(__always)
-              open func ownerDocument() -> Document? {
-                  var node: Node? = self
-                  while let current = node {
-                      if let document = current as? Document {
-                          return document
-                      }
-                      node = current.parentNode
-                  }
-                  return nil
-              }
-          '''.replace('              ', '')
+              return nil
+          }
 
-          old_dirty = '''    @inline(__always)
-              @usableFromInline
-              internal func markSourceDirty(force: Bool = false) {
-                  if sourceRangeDirty {
-                      ownerDocument()?.registerDirtySourceRoot(self)
-                      return
-                  }
-                  if !force, treeBuilder?.isBulkBuilding == true {
-                      return
-                  }
-                  sourceRangeDirty = true
-                  ownerDocument()?.registerDirtySourceRoot(self)
-                  parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
-              }
+          /// A token'''.replace('          ', '')
 
-              @inline(__always)
-              @usableFromInline
-              internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
-                  if sourceRangeDirty {
-                      if registerDirtyRoot {
-                          ownerDocument()?.registerDirtySourceRoot(self)
-                      }
-                      return
-                  }
-                  if !force, treeBuilder?.isBulkBuilding == true {
-                      return
-                  }
-                  sourceRangeDirty = true
-                  if registerDirtyRoot {
-                      ownerDocument()?.registerDirtySourceRoot(self)
-                  }
-                  parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
-              }
-          '''.replace('              ', '')
-          new_dirty = '''    @inline(__always)
-              @usableFromInline
-              internal func markSourceDirty(force: Bool = false) {
-                  markSourceDirty(force: force, registerDirtyRoot: true)
-              }
+          dirty_pattern = r'''    @inline\(__always\)\n    @usableFromInline\n    internal func markSourceDirty\(force: Bool = false\) \{.*?\n    @inline\(__always\)\n    @usableFromInline\n    internal func setSourceRange'''
+          dirty_replacement = '''    @inline(__always)
+          @usableFromInline
+          internal func markSourceDirty(force: Bool = false) {
+              markSourceDirty(force: force, registerDirtyRoot: true)
+          }
 
-              @inline(__always)
-              @usableFromInline
-              internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
-                  var node: Node? = self
-                  var shouldRegisterDirtyRoot = registerDirtyRoot
-                  while let current = node {
-                      if current.sourceRangeDirty {
-                          if shouldRegisterDirtyRoot {
-                              current.ownerDocument()?.registerDirtySourceRoot(current)
-                          }
-                          return
-                      }
-                      if !force, current.treeBuilder?.isBulkBuilding == true {
-                          return
-                      }
-                      current.sourceRangeDirty = true
+          @inline(__always)
+          @usableFromInline
+          internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
+              var node: Node? = self
+              var shouldRegisterDirtyRoot = registerDirtyRoot
+              while let current = node {
+                  if current.sourceRangeDirty {
                       if shouldRegisterDirtyRoot {
                           current.ownerDocument()?.registerDirtySourceRoot(current)
-                          shouldRegisterDirtyRoot = false
                       }
-                      node = current.parentNode
+                      return
                   }
+                  if !force, current.treeBuilder?.isBulkBuilding == true {
+                      return
+                  }
+                  current.sourceRangeDirty = true
+                  if shouldRegisterDirtyRoot {
+                      current.ownerDocument()?.registerDirtySourceRoot(current)
+                      shouldRegisterDirtyRoot = false
+                  }
+                  node = current.parentNode
               }
-          '''.replace('              ', '')
+          }
 
-          if old_owner not in text:
-              raise SystemExit('ownerDocument source did not match expected head')
-          if old_dirty not in text:
-              raise SystemExit('markSourceDirty source did not match expected head')
-          text = text.replace(old_owner, new_owner, 1).replace(old_dirty, new_dirty, 1)
+          @inline(__always)
+          @usableFromInline
+          internal func setSourceRange'''.replace('          ', '')
+
+          text, owner_count = re.subn(owner_pattern, owner_replacement, text, count=1, flags=re.S)
+          text, dirty_count = re.subn(dirty_pattern, dirty_replacement, text, count=1, flags=re.S)
+          if owner_count != 1 or dirty_count != 1:
+              raise SystemExit(f'unexpected replacement counts owner={owner_count} dirty={dirty_count}')
           path.write_text(text)
       - name: Commit repair and remove one-shot workflow
         run: |
