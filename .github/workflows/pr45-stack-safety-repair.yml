@@ -1,0 +1,127 @@
+name: PR45 stack-safety repair
+
+on:
+  push:
+    branches:
+      - fix/upstream-reader-output-policy-20260912
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/upstream-reader-output-policy-20260912
+          fetch-depth: 0
+      - name: Apply iterative ancestor walks
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('Sources/Node.swift')
+          text = path.read_text()
+
+          old_owner = '''    @inline(__always)
+              open func ownerDocument() -> Document? {
+                  if let document = self as? Document {
+                      return document
+                  }
+                  return parentNode?.ownerDocument()
+              }
+          '''.replace('              ', '')
+          new_owner = '''    @inline(__always)
+              open func ownerDocument() -> Document? {
+                  var node: Node? = self
+                  while let current = node {
+                      if let document = current as? Document {
+                          return document
+                      }
+                      node = current.parentNode
+                  }
+                  return nil
+              }
+          '''.replace('              ', '')
+
+          old_dirty = '''    @inline(__always)
+              @usableFromInline
+              internal func markSourceDirty(force: Bool = false) {
+                  if sourceRangeDirty {
+                      ownerDocument()?.registerDirtySourceRoot(self)
+                      return
+                  }
+                  if !force, treeBuilder?.isBulkBuilding == true {
+                      return
+                  }
+                  sourceRangeDirty = true
+                  ownerDocument()?.registerDirtySourceRoot(self)
+                  parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
+              }
+
+              @inline(__always)
+              @usableFromInline
+              internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
+                  if sourceRangeDirty {
+                      if registerDirtyRoot {
+                          ownerDocument()?.registerDirtySourceRoot(self)
+                      }
+                      return
+                  }
+                  if !force, treeBuilder?.isBulkBuilding == true {
+                      return
+                  }
+                  sourceRangeDirty = true
+                  if registerDirtyRoot {
+                      ownerDocument()?.registerDirtySourceRoot(self)
+                  }
+                  parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
+              }
+          '''.replace('              ', '')
+          new_dirty = '''    @inline(__always)
+              @usableFromInline
+              internal func markSourceDirty(force: Bool = false) {
+                  markSourceDirty(force: force, registerDirtyRoot: true)
+              }
+
+              @inline(__always)
+              @usableFromInline
+              internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
+                  var node: Node? = self
+                  var shouldRegisterDirtyRoot = registerDirtyRoot
+                  while let current = node {
+                      if current.sourceRangeDirty {
+                          if shouldRegisterDirtyRoot {
+                              current.ownerDocument()?.registerDirtySourceRoot(current)
+                          }
+                          return
+                      }
+                      if !force, current.treeBuilder?.isBulkBuilding == true {
+                          return
+                      }
+                      current.sourceRangeDirty = true
+                      if shouldRegisterDirtyRoot {
+                          current.ownerDocument()?.registerDirtySourceRoot(current)
+                          shouldRegisterDirtyRoot = false
+                      }
+                      node = current.parentNode
+                  }
+              }
+          '''.replace('              ', '')
+
+          if old_owner not in text:
+              raise SystemExit('ownerDocument source did not match expected head')
+          if old_dirty not in text:
+              raise SystemExit('markSourceDirty source did not match expected head')
+          text = text.replace(old_owner, new_owner, 1).replace(old_dirty, new_dirty, 1)
+          path.write_text(text)
+      - name: Commit repair and remove one-shot workflow
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/pr45-stack-safety-repair.yml
+          git add Sources/Node.swift
+          git commit -m 'Make deep ancestor walks stack-safe'
+          git push origin HEAD:fix/upstream-reader-output-policy-20260912
