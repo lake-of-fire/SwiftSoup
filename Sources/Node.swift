@@ -490,12 +490,10 @@ open class Node: Equatable, Hashable {
      */
     @inline(__always)
     open func ownerDocument() -> Document? {
-        var current: Node? = self
-        while let node = current {
-            if let document = node as? Document { return document }
-            current = node.parentNode
+        if let document = self as? Document {
+            return document
         }
-        return nil
+        return parentNode?.ownerDocument()
     }
 
     /// A token that changes when text content in this node's tree mutates.
@@ -537,24 +535,35 @@ open class Node: Equatable, Hashable {
     @inline(__always)
     @usableFromInline
     internal func markSourceDirty(force: Bool = false) {
-        markSourceDirty(force: force, registerDirtyRoot: true)
+        if sourceRangeDirty {
+            ownerDocument()?.registerDirtySourceRoot(self)
+            return
+        }
+        if !force, treeBuilder?.isBulkBuilding == true {
+            return
+        }
+        sourceRangeDirty = true
+        ownerDocument()?.registerDirtySourceRoot(self)
+        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
     }
 
     @inline(__always)
     @usableFromInline
     internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
-        if !sourceRangeDirty, !force, treeBuilder?.isBulkBuilding == true { return }
+        if sourceRangeDirty {
+            if registerDirtyRoot {
+                ownerDocument()?.registerDirtySourceRoot(self)
+            }
+            return
+        }
+        if !force, treeBuilder?.isBulkBuilding == true {
+            return
+        }
+        sourceRangeDirty = true
         if registerDirtyRoot {
-            sourceRangeDirty = true
             ownerDocument()?.registerDirtySourceRoot(self)
         }
-        var current: Node? = registerDirtyRoot ? parentNode : self
-        while let node = current {
-            if node.sourceRangeDirty { break }
-            if !force, node.treeBuilder?.isBulkBuilding == true { break }
-            node.sourceRangeDirty = true
-            current = node.parentNode
-        }
+        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
     }
 
     @inline(__always)
