@@ -496,6 +496,40 @@ open class Node: Equatable, Hashable {
         return parentNode?.ownerDocument()
     }
 
+    /// Internal stack-safe owner lookup for source tracking and source reuse.
+    ///
+    /// Built-in SwiftSoup node types use the default `ownerDocument()` semantics,
+    /// so their stored parent chain can be walked iteratively. At a subclass
+    /// boundary, resume virtual dispatch so custom owner redirection and
+    /// observation remain part of the public contract.
+    @inline(__always)
+    @usableFromInline
+    internal func ownerDocumentForInternalLookup() -> Document? {
+        var node: Node? = self
+        while let current = node {
+            if let document = current as? Document {
+                return document.ownerDocument()
+            }
+
+            let currentType = type(of: current)
+            let isBuiltIn =
+                currentType == Node.self ||
+                currentType == Element.self ||
+                currentType == FormElement.self ||
+                currentType == TextNode.self ||
+                currentType == DataNode.self ||
+                currentType == Comment.self ||
+                currentType == DocumentType.self ||
+                currentType == XmlDeclaration.self
+
+            if !isBuiltIn {
+                return current.ownerDocument()
+            }
+            node = current.parentNode
+        }
+        return nil
+    }
+
     /// A token that changes when text content in this node's tree mutates.
     /// Use this to invalidate external caches that depend on text content.
     @inline(__always)
@@ -535,35 +569,31 @@ open class Node: Equatable, Hashable {
     @inline(__always)
     @usableFromInline
     internal func markSourceDirty(force: Bool = false) {
-        if sourceRangeDirty {
-            ownerDocument()?.registerDirtySourceRoot(self)
-            return
-        }
-        if !force, treeBuilder?.isBulkBuilding == true {
-            return
-        }
-        sourceRangeDirty = true
-        ownerDocument()?.registerDirtySourceRoot(self)
-        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
+        markSourceDirty(force: force, registerDirtyRoot: true)
     }
 
     @inline(__always)
     @usableFromInline
     internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
-        if sourceRangeDirty {
-            if registerDirtyRoot {
-                ownerDocument()?.registerDirtySourceRoot(self)
+        var node: Node? = self
+        var shouldRegisterDirtyRoot = registerDirtyRoot
+        while let current = node {
+            if current.sourceRangeDirty {
+                if shouldRegisterDirtyRoot {
+                    current.ownerDocumentForInternalLookup()?.registerDirtySourceRoot(current)
+                }
+                return
             }
-            return
+            if !force, current.treeBuilder?.isBulkBuilding == true {
+                return
+            }
+            current.sourceRangeDirty = true
+            if shouldRegisterDirtyRoot {
+                current.ownerDocumentForInternalLookup()?.registerDirtySourceRoot(current)
+                shouldRegisterDirtyRoot = false
+            }
+            node = current.parentNode
         }
-        if !force, treeBuilder?.isBulkBuilding == true {
-            return
-        }
-        sourceRangeDirty = true
-        if registerDirtyRoot {
-            ownerDocument()?.registerDirtySourceRoot(self)
-        }
-        parentNode?.markSourceDirty(force: force, registerDirtyRoot: false)
     }
 
     @inline(__always)
@@ -1087,21 +1117,12 @@ open class Node: Equatable, Hashable {
               sourceRangeIsComplete,
               let range = sourceRange,
               range.isValid,
-              let doc = ownerDocument(),
+              let doc = ownerDocumentForInternalLookup(),
               let source = sourceBuffer?.bytes ?? doc.sourceBuffer?.bytes
         else {
             return nil
         }
-        let syntax = out.syntax()
-        if syntax == .xml && !doc.parsedAsXml {
-            return nil
-        }
-        if syntax == .html || syntax == .xml {
-            // ok
-        } else {
-            return nil
-        }
-        if range.end > source.count {
+        if !out.canReuseSource(parsedAsXml: doc.parsedAsXml) || range.end > source.count {
             return nil
         }
         return source[range.start..<range.end]
@@ -1112,7 +1133,7 @@ open class Node: Equatable, Hashable {
     internal func sourceSliceUTF8() -> ArraySlice<UInt8>? {
         guard let range = sourceRange,
               range.isValid,
-              let source = sourceBuffer?.bytes ?? ownerDocument()?.sourceBuffer?.bytes,
+              let source = sourceBuffer?.bytes ?? ownerDocumentForInternalLookup()?.sourceBuffer?.bytes,
               range.end <= source.count
         else {
             return nil
@@ -1122,17 +1143,27 @@ open class Node: Equatable, Hashable {
 
     @inline(__always)
     internal func outerHtmlFast(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings, allowRawSource: Bool) throws {
-        if let raw = rawSourceSlice(out, allowRawSource: allowRawSource) {
-            accum.append(raw)
-            return
-        }
-        try outerHtmlHead(accum, depth, out)
-        if !childNodes.isEmpty {
-            for child in childNodes {
-                try child.outerHtmlFast(accum, depth + 1, out, allowRawSource: allowRawSource)
+        // Preserve the historical authority of the stored childNodes arrays
+        // while avoiding one Swift call frame per nesting level. Public sibling
+        // accessors are overridable and therefore must not drive serialization.
+        var stack: [(node: Node, depth: Int, emitTail: Bool)] = [(self, depth, false)]
+        while let frame = stack.popLast() {
+            if frame.emitTail {
+                try frame.node.outerHtmlTail(accum, frame.depth, out)
+                continue
+            }
+            if let raw = frame.node.rawSourceSlice(out, allowRawSource: allowRawSource) {
+                accum.append(raw)
+                continue
+            }
+            try frame.node.outerHtmlHead(accum, frame.depth, out)
+            stack.append((frame.node, frame.depth, true))
+            if !frame.node.childNodes.isEmpty {
+                for child in frame.node.childNodes.reversed() {
+                    stack.append((child, frame.depth + 1, false))
+                }
             }
         }
-        try outerHtmlTail(accum, depth, out)
     }
 
     @inline(__always)
@@ -1141,13 +1172,7 @@ open class Node: Equatable, Hashable {
         _ depth: Int,
         _ out: OutputSettings
     ) throws {
-        try outerHtmlHead(accum, depth, out)
-        if !childNodes.isEmpty {
-            for child in childNodes {
-                try child.outerHtmlFastWithoutSourceReuse(accum, depth + 1, out)
-            }
-        }
-        try outerHtmlTail(accum, depth, out)
+        try outerHtmlFast(accum, depth, out, allowRawSource: false)
     }
     
     /**
