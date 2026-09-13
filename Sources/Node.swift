@@ -489,18 +489,30 @@ open class Node: Equatable, Hashable {
      - returns: the Document associated with this Node, or `nil` if there is no such Document.
      */
     @inline(__always)
-open func ownerDocument() -> Document? {
-    var node: Node? = self
-    while let current = node {
-        if let document = current as? Document {
-  return document
+    open func ownerDocument() -> Document? {
+        if let document = self as? Document {
+            return document
         }
-        node = current.parentNode
+        return parentNode?.ownerDocument()
     }
-    return nil
-}
 
-/// A token that changes when text content in this node's tree mutates.
+    /// Internal stack-safe lookup for source tracking and deep serialization.
+    /// This deliberately follows stored parent links rather than changing the
+    /// open `ownerDocument()` dispatch contract for subclasses.
+    @inline(__always)
+    @usableFromInline
+    internal func ownerDocumentDirect() -> Document? {
+        var node: Node? = self
+        while let current = node {
+            if let document = current as? Document {
+                return document
+            }
+            node = current.parentNode
+        }
+        return nil
+    }
+
+    /// A token that changes when text content in this node's tree mutates.
     /// Use this to invalidate external caches that depend on text content.
     @inline(__always)
     public func textMutationVersionToken() -> Int {
@@ -550,7 +562,7 @@ internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
     while let current = node {
         if current.sourceRangeDirty {
   if shouldRegisterDirtyRoot {
-      current.ownerDocument()?.registerDirtySourceRoot(current)
+      current.ownerDocumentDirect()?.registerDirtySourceRoot(current)
   }
   return
         }
@@ -559,7 +571,7 @@ internal func markSourceDirty(force: Bool = false, registerDirtyRoot: Bool) {
         }
         current.sourceRangeDirty = true
         if shouldRegisterDirtyRoot {
-  current.ownerDocument()?.registerDirtySourceRoot(current)
+  current.ownerDocumentDirect()?.registerDirtySourceRoot(current)
   shouldRegisterDirtyRoot = false
         }
         node = current.parentNode
@@ -1087,7 +1099,7 @@ internal func setSourceRange(_ range: SourceRange, complete: Bool) {
               sourceRangeIsComplete,
               let range = sourceRange,
               range.isValid,
-              let doc = ownerDocument(),
+              let doc = ownerDocumentDirect(),
               let source = sourceBuffer?.bytes ?? doc.sourceBuffer?.bytes
         else {
             return nil
@@ -1113,34 +1125,26 @@ internal func setSourceRange(_ range: SourceRange, complete: Bool) {
 
     @inline(__always)
     internal func outerHtmlFast(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings, allowRawSource: Bool) throws {
-        // Walk head/children/tail without consuming a stack frame per element.
-        // A reused subtree is already complete and can advance straight to its
-        // sibling, while the ancestors still receive their closing tags.
-        var node: Node = self
-        var nodeDepth = depth
-        while true {
-            if let raw = node.rawSourceSlice(out, allowRawSource: allowRawSource) {
+        // Preserve the historical authority of the stored childNodes arrays
+        // while avoiding one Swift call frame per nesting level. Public sibling
+        // accessors are overridable and therefore must not drive serialization.
+        var stack: [(node: Node, depth: Int, emitTail: Bool)] = [(self, depth, false)]
+        while let frame = stack.popLast() {
+            if frame.emitTail {
+                try frame.node.outerHtmlTail(accum, frame.depth, out)
+                continue
+            }
+            if let raw = frame.node.rawSourceSlice(out, allowRawSource: allowRawSource) {
                 accum.append(raw)
-            } else {
-                try node.outerHtmlHead(accum, nodeDepth, out)
-                if let child = node.childNodes.first {
-                    node = child
-                    nodeDepth += 1
-                    continue
-                }
-                try node.outerHtmlTail(accum, nodeDepth, out)
+                continue
             }
-            while node !== self {
-                if let sibling = node.nextSibling() {
-                    node = sibling
-                    break
+            try frame.node.outerHtmlHead(accum, frame.depth, out)
+            stack.append((frame.node, frame.depth, true))
+            if !frame.node.childNodes.isEmpty {
+                for child in frame.node.childNodes.reversed() {
+                    stack.append((child, frame.depth + 1, false))
                 }
-                guard let parent = node.parentNode else { return }
-                node = parent
-                nodeDepth -= 1
-                try node.outerHtmlTail(accum, nodeDepth, out)
             }
-            if node === self { return }
         }
     }
 
