@@ -24,4 +24,13 @@ jobs:
     - name: Build
       run: swift build -v
     - name: Run tests
-      run: swift test -v
+      shell: bash
+      run: |
+        set +e
+        swift test -v > /tmp/swift-test.log 2>&1
+        status=$?
+        if [ "$status" -ne 0 ]; then
+          echo "=== concise failing-test diagnostics ==="
+          grep -E "Test Case .* failed|XCTAssert|error:|failed \(|failure:" /tmp/swift-test.log | tail -n 120 || true
+        fi
+        exit "$status"
