@@ -49,8 +49,17 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Run full package suite
-        run: swift test
+      - name: Run full package suite with concise failure diagnostics
+        shell: bash
+        run: |
+          set +e
+          swift test > /tmp/swift-test.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "=== failing SwiftSoup tests ==="
+            grep -E "Test Case .* failed|XCTAssert|error:|failed \(|failure:" /tmp/swift-test.log | tail -n 120 || true
+          fi
+          exit "$status"
 
   baseline-full-suite:
     name: baseline-full-suite
