@@ -42,3 +42,5 @@ jobs:
           git add Sources/Node.swift .github/workflows/pr45-owner-dispatch-repair.yml
           git commit -m "Preserve owner Document dispatch in stack-safe lookup"
           git push origin HEAD:fix/upstream-reader-output-policy-20260912
+
+# trigger existing workflow
