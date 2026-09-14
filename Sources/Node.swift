@@ -1058,16 +1058,7 @@ open class Node: Equatable, Hashable {
         else {
             return nil
         }
-        let syntax = out.syntax()
-        if syntax == .xml && !doc.parsedAsXml {
-            return nil
-        }
-        if syntax == .html || syntax == .xml {
-            // ok
-        } else {
-            return nil
-        }
-        if range.end > source.count {
+        if !out.canReuseSource(parsedAsXml: doc.parsedAsXml) || range.end > source.count {
             return nil
         }
         return source[range.start..<range.end]

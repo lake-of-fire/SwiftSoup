@@ -519,4 +519,70 @@ class DocumentTest: XCTestCase {
 		}
 	}
 
+    func testCompactUTF8PreservesFragmentInsertionsAndRemovals() throws {
+        let document = try SwiftSoup.parse("<p>Before</p>")
+        document.outputSettings().prettyPrint(pretty: false)
+
+        try document.body()?.appendElement("p").text("After")
+        XCTAssertEqual(
+            try document.outerHtmlUTF8(),
+            try document.outerHtmlUTF8FromCurrentTree()
+        )
+
+        try document.select("p").remove()
+        XCTAssertEqual(
+            try document.outerHtmlUTF8(),
+            try document.outerHtmlUTF8FromCurrentTree()
+        )
+    }
+
+    func testCompactUTF8UsesCurrentTreeForMismatchedSyntax() throws {
+        let htmlDocument = try SwiftSoup.parse(
+            "<html><head></head><body><br><input disabled></body></html>"
+        )
+        htmlDocument.outputSettings().prettyPrint(pretty: false).syntax(syntax: .xml)
+        XCTAssertEqual(
+            try htmlDocument.outerHtmlUTF8(),
+            try htmlDocument.outerHtmlUTF8FromCurrentTree()
+        )
+
+        let xmlDocument = try SwiftSoup.parse(
+            "<html><head/><body><br/></body></html>",
+            "",
+            Parser.xmlParser()
+        )
+        xmlDocument.outputSettings().prettyPrint(pretty: false).syntax(syntax: .html)
+        XCTAssertEqual(
+            try xmlDocument.outerHtmlUTF8(),
+            try xmlDocument.outerHtmlUTF8FromCurrentTree()
+        )
+    }
+
+    func testCompactUTF8UsesCurrentTreeForNondefaultEncodingAndEscapeMode() throws {
+        for charset in [String.Encoding.ascii, .utf8] {
+            for escapeMode in [Entities.EscapeMode.base, .extended, .xhtml] {
+                if charset == .utf8 && escapeMode == .base { continue }
+
+                let document = try SwiftSoup.parse(
+                    "<p title='日本語'>日本語 © &nbsp;</p><b>元</b>"
+                )
+                document.outputSettings()
+                    .prettyPrint(pretty: false)
+                    .charset(charset)
+                    .escapeMode(escapeMode)
+
+                XCTAssertEqual(
+                    try document.outerHtmlUTF8(),
+                    try document.outerHtmlUTF8FromCurrentTree()
+                )
+
+                try document.select("b").first()?.text("変更")
+                XCTAssertEqual(
+                    try document.outerHtmlUTF8(),
+                    try document.outerHtmlUTF8FromCurrentTree()
+                )
+            }
+        }
+    }
+
 }

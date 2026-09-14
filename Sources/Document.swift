@@ -658,12 +658,18 @@ open class Document: Element {
 
     @usableFromInline
     internal func patchedOuterHtmlUTF8() throws -> [UInt8]? {
-        guard !_outputSettings.prettyPrint(),
+        guard _outputSettings.canReuseSource(parsedAsXml: parsedAsXml),
               let source = sourceBuffer?.bytes else {
             return nil
         }
 
+        // Synthetic fragment containers have no replaceable source range. Their
+        // child edits cannot be represented by splicing ranges from the input.
+        guard currentDirtySourceRoots().allSatisfy({
+            $0.sourceRangeIsComplete && $0.sourceRange != nil
+        }) else { return nil }
         let patches = try sourcePatches()
+        if patches.isEmpty, sourceRangeDirty { return nil }
         if patches.isEmpty {
             return source
         }
@@ -766,6 +772,14 @@ public class OutputSettings: NSCopying {
     private var _syntax = Syntax.html
 
     public init() {}
+
+    /// Source slices preserve their original entity spelling. Only compact
+    /// UTF-8 output with the base escape policy can safely reuse them.
+    @usableFromInline
+    internal func canReuseSource(parsedAsXml: Bool) -> Bool {
+        !_prettyPrint && _encoder == .utf8 && _escapeMode == .base
+            && parsedAsXml == (_syntax == .xml)
+    }
 
     /**
      Get the document's current HTML escape mode: `e`, which provides a limited set of named HTML
