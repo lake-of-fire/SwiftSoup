@@ -59,6 +59,13 @@ final class ContainsTextParityTest: XCTestCase {
         try assertParity("<p></p><p>abc</p><p>a <b>B</b> c</p>", needles: ["", "a", "ABC", "a b", "b c", "missing"])
     }
 
+    func testLongRepeatedPrefixesAndOverlappingMatches() throws {
+        let prefix = String(repeating: "a", count: 4_096)
+        let needle = String(repeating: "a", count: 256)
+        try assertParity("<p>\(prefix)<b></b>ab</p>", needles: [needle + "b", needle + "c", needle.uppercased()])
+        try assertParity("<p>abababab<b></b>ababababac</p>", needles: ["ababababababababac", "ababababababababaa"])
+    }
+
     func testCachedContainsResultsUpdateAfterTextMutation() throws {
         let doc = try SwiftSoup.parse("<p>a</p>")
         let p = try XCTUnwrap(doc.select("p").first())
