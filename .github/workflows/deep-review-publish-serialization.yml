@@ -1,0 +1,94 @@
+name: Publish reviewed serialization fix
+on:
+  push:
+    branches: [audit/deep-review-source-20260917]
+    paths: [.github/workflows/deep-review-publish-serialization.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 040a8c527c23153653af8b54b95c99df2f201be8
+      - name: Apply the reviewed source change
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          path = Path('Sources/Node.swift')
+          source = path.read_text()
+          start = source.index('    @inline(__always)\n    internal func outerHtmlFast(')
+          end = source.index('    \n    /**\n     Write this node', start)
+          replacement = '''    private struct SerializationFrame {
+              let node: Node
+              let children: [Node]
+              let depth: Int
+              var nextChild: Int
+          }
+
+          @inline(__always)
+          internal func outerHtmlFast(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings, allowRawSource: Bool) throws {
+              // Keep continuations on the heap rather than recursing once per DOM level.
+              // Snapshot each parent's children after its head callback, just as the
+              // recursive for-in traversal did. Wide trees need only O(depth) frames.
+              var frames: [SerializationFrame] = []
+              var current: Node? = self
+              var currentDepth = depth
+              while let node = current {
+                  if let raw = node.rawSourceSlice(out, allowRawSource: allowRawSource) {
+                      accum.append(raw)
+                  } else {
+                      try node.outerHtmlHead(accum, currentDepth, out)
+                      let children = node.childNodes
+                      if let first = children.first {
+                          frames.append(SerializationFrame(
+                              node: node, children: children, depth: currentDepth, nextChild: 1
+                          ))
+                          current = first
+                          currentDepth += 1
+                          continue
+                      }
+                      try node.outerHtmlTail(accum, currentDepth, out)
+                  }
+
+                  current = nil
+                  while let frame = frames.last {
+                      if frame.nextChild < frame.children.count {
+                          current = frame.children[frame.nextChild]
+                          currentDepth = frame.depth + 1
+                          frames[frames.count - 1].nextChild += 1
+                          break
+                      }
+                      frames.removeLast()
+                      try frame.node.outerHtmlTail(accum, frame.depth, out)
+                  }
+              }
+          }
+
+          @inline(__always)
+          internal func outerHtmlFastWithoutSourceReuse(
+              _ accum: StringBuilder,
+              _ depth: Int,
+              _ out: OutputSettings
+          ) throws {
+              try outerHtmlFast(accum, depth, out, allowRawSource: false)
+          }
+          '''
+          # Dedent the literal's continuation lines to their Swift indentation.
+          lines = replacement.splitlines(keepends=True)
+          replacement = lines[0] + ''.join(line[6:] if line.startswith('      ') else line for line in lines[1:])
+          path.write_text(source[:start] + replacement + source[end:])
+          subprocess.run(['git', 'add', 'Sources/Node.swift'], check=True)
+          tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert tree == 'd2ae57ee8ca1f41eafbdb65b5c7989cde6faa4aa', tree
+      - name: Commit and publish only the verified feature branch
+        run: |
+          git diff --cached --check
+          git config user.name 'SwiftSoup Review'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: serialize deep DOM trees using bounded explicit frames'
+          git push origin HEAD:refs/heads/fix/review-serialization-stack-20260917
+          git rev-parse HEAD
