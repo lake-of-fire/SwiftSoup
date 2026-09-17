@@ -1117,12 +1117,21 @@ open class Node: Equatable, Hashable {
               sourceRangeIsComplete,
               let range = sourceRange,
               range.isValid,
-              let doc = ownerDocumentForInternalLookup(),
+              let doc = ownerDocument(),
               let source = sourceBuffer?.bytes ?? doc.sourceBuffer?.bytes
         else {
             return nil
         }
-        if !out.canReuseSource(parsedAsXml: doc.parsedAsXml) || range.end > source.count {
+        let syntax = out.syntax()
+        if syntax == .xml && !doc.parsedAsXml {
+            return nil
+        }
+        if syntax == .html || syntax == .xml {
+            // ok
+        } else {
+            return nil
+        }
+        if range.end > source.count {
             return nil
         }
         return source[range.start..<range.end]
@@ -1133,7 +1142,7 @@ open class Node: Equatable, Hashable {
     internal func sourceSliceUTF8() -> ArraySlice<UInt8>? {
         guard let range = sourceRange,
               range.isValid,
-              let source = sourceBuffer?.bytes ?? ownerDocumentForInternalLookup()?.sourceBuffer?.bytes,
+              let source = sourceBuffer?.bytes ?? ownerDocument()?.sourceBuffer?.bytes,
               range.end <= source.count
         else {
             return nil
@@ -1143,27 +1152,17 @@ open class Node: Equatable, Hashable {
 
     @inline(__always)
     internal func outerHtmlFast(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings, allowRawSource: Bool) throws {
-        // Preserve the historical authority of the stored childNodes arrays
-        // while avoiding one Swift call frame per nesting level. Public sibling
-        // accessors are overridable and therefore must not drive serialization.
-        var stack: [(node: Node, depth: Int, emitTail: Bool)] = [(self, depth, false)]
-        while let frame = stack.popLast() {
-            if frame.emitTail {
-                try frame.node.outerHtmlTail(accum, frame.depth, out)
-                continue
-            }
-            if let raw = frame.node.rawSourceSlice(out, allowRawSource: allowRawSource) {
-                accum.append(raw)
-                continue
-            }
-            try frame.node.outerHtmlHead(accum, frame.depth, out)
-            stack.append((frame.node, frame.depth, true))
-            if !frame.node.childNodes.isEmpty {
-                for child in frame.node.childNodes.reversed() {
-                    stack.append((child, frame.depth + 1, false))
-                }
+        if let raw = rawSourceSlice(out, allowRawSource: allowRawSource) {
+            accum.append(raw)
+            return
+        }
+        try outerHtmlHead(accum, depth, out)
+        if !childNodes.isEmpty {
+            for child in childNodes {
+                try child.outerHtmlFast(accum, depth + 1, out, allowRawSource: allowRawSource)
             }
         }
+        try outerHtmlTail(accum, depth, out)
     }
 
     @inline(__always)
@@ -1172,7 +1171,13 @@ open class Node: Equatable, Hashable {
         _ depth: Int,
         _ out: OutputSettings
     ) throws {
-        try outerHtmlFast(accum, depth, out, allowRawSource: false)
+        try outerHtmlHead(accum, depth, out)
+        if !childNodes.isEmpty {
+            for child in childNodes {
+                try child.outerHtmlFastWithoutSourceReuse(accum, depth + 1, out)
+            }
+        }
+        try outerHtmlTail(accum, depth, out)
     }
     
     /**
