@@ -1117,21 +1117,13 @@ open class Node: Equatable, Hashable {
               sourceRangeIsComplete,
               let range = sourceRange,
               range.isValid,
-              let doc = ownerDocument(),
+              let doc = ownerDocumentForInternalLookup(),
               let source = sourceBuffer?.bytes ?? doc.sourceBuffer?.bytes
         else {
             return nil
         }
-        let syntax = out.syntax()
-        if syntax == .xml && !doc.parsedAsXml {
-            return nil
-        }
-        if syntax == .html || syntax == .xml {
-            // ok
-        } else {
-            return nil
-        }
-        if range.end > source.count {
+        if !out.canReuseSource(parsedAsXml: doc.parsedAsXml)
+            || range.end > source.count {
             return nil
         }
         return source[range.start..<range.end]
@@ -1142,7 +1134,8 @@ open class Node: Equatable, Hashable {
     internal func sourceSliceUTF8() -> ArraySlice<UInt8>? {
         guard let range = sourceRange,
               range.isValid,
-              let source = sourceBuffer?.bytes ?? ownerDocument()?.sourceBuffer?.bytes,
+              let source = sourceBuffer?.bytes
+                ?? ownerDocumentForInternalLookup()?.sourceBuffer?.bytes,
               range.end <= source.count
         else {
             return nil
