@@ -1,0 +1,111 @@
+name: Publish continuation review repairs
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/deep-review-continuation-publish.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e200dd25c53a1766f86fd4b1069fb7f899b75b5a
+          path: payload
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 579430cf6909c4f3b3cb0da2150c01a4b32114aa
+          path: product
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.1'
+      - name: Reconstruct source-only test-first commits with complete tree guards
+        working-directory: product
+        env:
+          REVIEW_ACTOR: ${{ github.actor }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          data = pathlib.Path('../payload/.github/review')
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'review-evidence'
+          output.mkdir()
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          def run(*args, **kwargs):
+              subprocess.run(args, check=True, **kwargs)
+          run('git', 'config', 'user.name', os.environ['REVIEW_ACTOR'])
+          run('git', 'config', 'user.email', os.environ['REVIEW_ACTOR'] + '@users.noreply.github.com')
+          assert git('rev-parse', 'HEAD') == '579430cf6909c4f3b3cb0da2150c01a4b32114aa'
+          assert git('rev-parse', 'HEAD^{tree}') == 'a69e2cb92c0bd9c44b3f4406f5328d9be618796a'
+          pieces = re.split(r'^===([a-z-]+)===\n', (data / 'continuation-source-patches.txt').read_text(), flags=re.M)
+          assert pieces[0] == '' and len(pieces) == 11
+          patches = dict(zip(pieces[1::2], pieces[2::2]))
+          stages = [
+              ('unicode-cursors', 'CharacterReaderUnicodeCursorTest', '04dd14e245387ac0e16087b2c052cd68e1d982ae', '33338ad7ada47f47cee0c15d739b38ec04089f3d'),
+              ('unicode-prefixes', 'CharacterReaderUnicodeMatchTest', 'b183d6730f144e1d398cf77dd82cfc7774308a8d', '852d70f8e8939e28a6b37118b6c0c004a807a806'),
+              ('empty-reader-search', 'CharacterReaderEmptySearchTest', '13d686b5834aff4452083fdc2122138bd3784a6b', '93380176cb842b40c13081446988e95cddb3a8aa'),
+              ('rcdata-modes', 'RcdataMixedCaseEndTagTest', '75d92dfcae3ac375b2563c53eb028f9065f908f2', '0baa8644dac2c211f94a6fc94f7a6010c674494b'),
+              ('rawtext-modes', 'RawTextBodyModeTest', '640cd1916b100b059dc47fe3f5c7a8c8daafc16a', 'f625ec2717ed17b80d1e9048b33bdcf58ee6e0ec'),
+          ]
+          receipts = []
+          for name, suite, test_tree, fixed_tree in stages:
+              target = pathlib.Path('Tests/SwiftSoupTests') / (suite + '.swift')
+              assert not target.exists()
+              target.write_bytes((data / 'continuation-tests' / target.name).read_bytes())
+              run('git', 'add', '--', str(target))
+              assert git('write-tree') == test_tree, ('test tree', name, git('write-tree'))
+              run('git', 'commit', '-m', 'test: reproduce ' + name.replace('-', ' ') + ' defects')
+              test_sha = git('rev-parse', 'HEAD')
+              patch = patches[name]
+              run('git', 'apply', '--check', '-', input=patch, text=True)
+              run('git', 'apply', '-', input=patch, text=True)
+              run('git', 'add', '-u', 'Sources')
+              run('git', 'diff', '--check', '--cached')
+              assert git('write-tree') == fixed_tree, ('fixed tree', name, git('write-tree'))
+              run('git', 'commit', '-m', 'fix: repair ' + name.replace('-', ' '))
+              receipts.append({'name': name, 'suite': suite, 'branch': 'fix/review-' + name + '-20260917', 'test_sha': test_sha, 'fix_sha': git('rev-parse', 'HEAD'), 'test_tree': test_tree, 'fixed_tree': fixed_tree})
+          assert not git('status', '--porcelain')
+          (output / 'receipts.json').write_text(json.dumps(receipts, indent=2) + '\n')
+          (output / 'manifest.txt').write_text(git('ls-tree', '-r', 'HEAD') + '\n')
+          (output / 'cumulative.patch').write_text(subprocess.check_output(['git', 'diff', '--full-index', '579430cf6909c4f3b3cb0da2150c01a4b32114aa', 'HEAD'], text=True))
+          run('git', 'archive', '--format=tar.gz', '--output=' + str(output / 'source.tar.gz'), 'HEAD')
+          print(json.dumps(receipts, indent=2))
+          PY
+      - name: Test the exact final source before publishing
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift --version | tee "$RUNNER_TEMP/review-evidence/swift-version.txt"
+          swift test -c release --jobs 2 2>&1 | tee "$RUNNER_TEMP/review-evidence/release.log"
+          grep -q 'Executed 1392 tests, with 17 tests skipped and 0 failures' "$RUNNER_TEMP/review-evidence/release.log"
+          test "$(git rev-parse HEAD^{tree})" = f625ec2717ed17b80d1e9048b33bdcf58ee6e0ec
+          test -z "$(git status --porcelain)"
+      - name: Atomically publish new branches without changing existing branches
+        working-directory: product
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'review-evidence'
+          receipts = json.loads((output / 'receipts.json').read_text())
+          specs = []
+          for entry in receipts:
+              ref = 'refs/heads/' + entry['branch']
+              existing = subprocess.check_output(['git', 'ls-remote', '--heads', 'origin', ref], text=True)
+              assert not existing.strip(), ('branch already exists', ref)
+              specs.append(entry['fix_sha'] + ':' + ref)
+          subprocess.run(['git', 'push', '--atomic', 'origin', *specs], check=True)
+          for entry in receipts:
+              value = subprocess.check_output(['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + entry['branch']], text=True).split()[0]
+              assert value == entry['fix_sha']
+          (output / 'published.txt').write_text('All five new branches verified. No master update or merge.\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swiftsoup-review-continuation-evidence
+          path: ${{ runner.temp }}/review-evidence/
+          retention-days: 14
