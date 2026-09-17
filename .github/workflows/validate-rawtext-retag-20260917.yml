@@ -1,0 +1,35 @@
+name: Validate raw-text retag source reuse
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/validate-rawtext-retag-20260917.yml]
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Red then green qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach d5beaa2d2414c7a99c2cf48765f0f28d75d337cb
+          set +e
+          swift test -j 4 --filter RawTextRetagSourceReuseTest > /tmp/red.log 2>&1
+          red=$?
+          set -e
+          cat /tmp/red.log
+          if [ "$red" -eq 0 ]; then
+            echo 'Expected test-only revision to fail, but it passed' >&2
+            exit 1
+          fi
+          grep -Eq 'failed|XCTAssert|error:' /tmp/red.log
+
+          git checkout --detach c31f4e0299ffa03084f84e147e8c8c8ddfaf9153
+          swift test -j 4 --filter RawTextRetagSourceReuseTest
+          swift test -j 4
+          swift test -j 4 -c release
