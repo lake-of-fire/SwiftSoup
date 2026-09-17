@@ -1,0 +1,81 @@
+name: Publish Element.hasText stack repair
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/publish-has-text-stack-20260917.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish exact reviewed repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='fix/review-has-text-stack-20260917'
+          expected_head='d978d4d8afc1a9b3da755fa742932bac68c5aadb'
+          expected_test_tree='d68ad3bb858fb549357e95a95a4f20e8736ed3cb'
+          expected_fixed_tree='580db1955e523224b6d4f32012aef86224a46376'
+          git fetch origin "refs/heads/$branch"
+          test "$(git rev-parse FETCH_HEAD)" = "$expected_head"
+          test "$(git rev-parse FETCH_HEAD^{tree})" = "$expected_test_tree"
+          dir="$(mktemp -d)"
+          git worktree add --detach "$dir" FETCH_HEAD
+          cd "$dir"
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Sources/Element.swift')
+          s = p.read_text()
+          old = '''    public func hasText() -> Bool {
+                  for child: Node in childNodes {
+                      if let textNode = (child as? TextNode) {
+                          if (!textNode.isBlank()) {
+                              return true
+                          }
+                      } else if let el = (child as? Element) {
+                          if (el.hasText()) {
+                              return true
+                          }
+                      }
+                  }
+                  return false
+              }
+          '''
+          new = '''    public func hasText() -> Bool {
+                  // Preserve the recursive implementation's depth-first child order without
+                  // consuming one call frame per element on deeply nested documents.
+                  var pending: [Node] = []
+                  pending.reserveCapacity(childNodes.count)
+                  for child in childNodes.reversed() {
+                      pending.append(child)
+                  }
+                  while let node = pending.popLast() {
+                      if let textNode = node as? TextNode {
+                          if !textNode.isBlank() {
+                              return true
+                          }
+                      } else if let element = node as? Element {
+                          for child in element.childNodes.reversed() {
+                              pending.append(child)
+                          }
+                      }
+                  }
+                  return false
+              }
+          '''
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one recursive hasText body, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git diff --check
+          git add Sources/Element.swift
+          git commit -m 'fix: make Element.hasText traversal stack safe'
+          test "$(git rev-parse HEAD^{tree})" = "$expected_fixed_tree"
+          git push origin "HEAD:refs/heads/$branch"
