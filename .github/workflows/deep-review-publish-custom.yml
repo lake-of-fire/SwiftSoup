@@ -1,0 +1,65 @@
+name: Publish reviewed custom evaluator fix
+on:
+  push:
+    branches: [audit/deep-review-source-20260917]
+    paths: [.github/workflows/deep-review-publish-custom.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: beabdaf946a6dd79b546dd6b2a8c350c30ea16d0
+      - name: Apply reviewed indexed-planning guard
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess, textwrap
+          path = Path('Sources/Evaluator.swift')
+          source = path.read_text()
+          leaves = ['Tag', 'TagEndsWith', 'Id', 'Class', 'Attribute', 'AttributeStarting', 'AttributeWithValue', 'AttributeWithValueNot', 'AttributeWithValueStarting', 'AttributeWithValueEnding', 'AttributeWithValueContaining', 'AttributeWithValueMatching', 'AllElements', 'IndexLessThan', 'IndexGreaterThan', 'IndexEquals', 'IsLastChild', 'IsFirstOfType', 'IsLastOfType', 'IsNthChild', 'IsNthLastChild', 'IsNthOfType', 'IsNthLastOfType', 'IsFirstChild', 'IsRoot', 'IsOnlyChild', 'IsOnlyOfType', 'IsEmpty', 'ContainsText', 'ContainsOwnText', 'ContainsData', 'Matches', 'MatchesOwn']
+          code = '''// Indexed plans may skip candidates and reorder predicates. Only known
+          // built-ins can opt into that behavior: open/custom evaluators may depend on
+          // call order, mutate the DOM, or hide custom evaluators inside wrappers.
+          // Recompute through the graph because CombiningEvaluator.Or is mutable.
+          internal var supportsIndexedCandidateFiltering: Bool {
+              let dynamicType = type(of: self)
+              if let combined = self as? CombiningEvaluator,
+                 dynamicType == CombiningEvaluator.And.self || dynamicType == CombiningEvaluator.Or.self {
+                  return combined.evaluators.allSatisfy { $0.supportsIndexedCandidateFiltering }
+              }
+              if let structural = self as? StructuralEvaluator,
+                 dynamicType == StructuralEvaluator.Has.self ||
+                 dynamicType == StructuralEvaluator.Not.self ||
+                 dynamicType == StructuralEvaluator.Parent.self ||
+                 dynamicType == StructuralEvaluator.ImmediateParent.self ||
+                 dynamicType == StructuralEvaluator.PreviousSibling.self ||
+                 dynamicType == StructuralEvaluator.ImmediatePreviousSibling.self {
+                  return structural.evaluator.supportsIndexedCandidateFiltering
+              }
+              return dynamicType == StructuralEvaluator.Root.self ||
+          '''
+          code = textwrap.indent(code, '    ')
+          code += ' ||\n'.join('            dynamicType == Evaluator.' + leaf + '.self' for leaf in leaves) + '\n    }\n\n'
+          anchor = '    /**\n     * Evaluator for tag name\n'
+          assert source.count(anchor) == 1
+          path.write_text(source.replace(anchor, code + anchor))
+          for filename, anchor, variable in [('Collector.swift', '        let evaluators = eval.evaluators\n', 'eval'), ('CssSelector.swift', '        var best: IndexedCandidate? = nil\n', 'evaluator')]:
+              path = Path('Sources') / filename
+              source = path.read_text()
+              assert source.count(anchor) == 1
+              path.write_text(source.replace(anchor, '        guard ' + variable + '.supportsIndexedCandidateFiltering else { return nil }\n' + anchor))
+          subprocess.run(['git', 'add', 'Sources/Evaluator.swift', 'Sources/Collector.swift', 'Sources/CssSelector.swift'], check=True)
+          tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert tree == '71646a1b903e188e077260a43a608303a552f050', tree
+      - name: Commit and publish only the verified feature branch
+        run: |
+          git diff --cached --check
+          git config user.name 'SwiftSoup Review'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: retain DFS evaluation for custom predicate graphs'
+          git push origin HEAD:refs/heads/fix/review-custom-evaluator-order-20260917
+          git rev-parse HEAD
