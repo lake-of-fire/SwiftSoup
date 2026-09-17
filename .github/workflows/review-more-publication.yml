@@ -1,0 +1,24 @@
+name: Qualify and publish five deep-review repairs
+on:
+  push:
+    branches: [audit/review-sanitizer-bounds-20260917]
+    paths: [.github/workflows/review-more-publication.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact independent trees and release-test composition before publication
+        run: python3 .github/deep-review-more/publish.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swiftsoup-five-deep-review-repairs
+          path: ${{ runner.temp }}/deep-review-more-evidence/
+          retention-days: 7

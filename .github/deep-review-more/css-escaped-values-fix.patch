@@ -1,0 +1,82 @@
+diff --git a/Sources/Whitelist.swift b/Sources/Whitelist.swift
+index ed25da92a739f1f04d5fb870f6e2e055f26334d7..b26b99de18d2545adcef2995552851d12b4ee984 100644
+--- a/Sources/Whitelist.swift
++++ b/Sources/Whitelist.swift
+@@ -893,7 +893,8 @@ import Foundation
+ 
+     private func isSafeCSSValue(_ value: String) -> Bool {
+         let sanitized = stripCSSComments(value)
+-        let normalized = sanitized.lowercased()
++        guard let decoded = decodeCSSValueForValidation(sanitized) else { return false }
++        let normalized = decoded.lowercased()
+             .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+ 
+         return !normalized.contains("expression(")
+@@ -901,6 +902,67 @@ import Foundation
+             && !normalized.contains("url(")
+     }
+ 
++    /// Decode escapes only for the denylist check. Keep the original spelling in
++    /// output: decoded quotes, semicolons, or backslashes must not become syntax.
++    /// CSS escapes consume 1...6 hex digits and one optional whitespace terminator.
++    private func decodeCSSValueForValidation(_ value: String) -> String? {
++        guard value.utf8.contains(0x5C) else { return value }
++        let scalars = Array(value.unicodeScalars)
++        var decoded = String.UnicodeScalarView()
++        var index = 0
++        func hexValue(_ scalar: UnicodeScalar) -> UInt32? {
++            switch scalar.value {
++            case 0x30...0x39: return scalar.value - 0x30
++            case 0x41...0x46: return scalar.value - 0x41 + 10
++            case 0x61...0x66: return scalar.value - 0x61 + 10
++            default: return nil
++            }
++        }
++        func isWhitespace(_ scalar: UnicodeScalar) -> Bool {
++            switch scalar.value {
++            case 0x09, 0x0A, 0x0C, 0x0D, 0x20: return true
++            default: return false
++            }
++        }
++        while index < scalars.count {
++            let scalar = scalars[index]
++            index += 1
++            guard scalar.value == 0x5C else {
++                decoded.append(scalar)
++                continue
++            }
++            guard index < scalars.count else { return nil }
++            if hexValue(scalars[index]) != nil {
++                var codePoint: UInt32 = 0
++                var digits = 0
++                while index < scalars.count, digits < 6, let digit = hexValue(scalars[index]) {
++                    codePoint = codePoint * 16 + digit
++                    index += 1
++                    digits += 1
++                }
++                if index < scalars.count, isWhitespace(scalars[index]) {
++                    let terminator = scalars[index].value
++                    index += 1
++                    if terminator == 0x0D, index < scalars.count, scalars[index].value == 0x0A {
++                        index += 1
++                    }
++                }
++                decoded.append(codePoint == 0 ? "\u{FFFD}" : UnicodeScalar(codePoint) ?? "\u{FFFD}")
++            } else {
++                let escaped = scalars[index]
++                index += 1
++                // In quoted CSS strings an escaped newline is a continuation.
++                // Removing it here is conservative for invalid unquoted values.
++                if escaped.value == 0x0D {
++                    if index < scalars.count, scalars[index].value == 0x0A { index += 1 }
++                } else if escaped.value != 0x0A && escaped.value != 0x0C {
++                    decoded.append(escaped)
++                }
++            }
++        }
++        return String(decoded)
++    }
++
+     private func parseStyleDeclaration(_ declaration: String) -> CSSDeclaration? {
+         let trimmedDeclaration = declaration.trimmingCharacters(in: .whitespacesAndNewlines)
+         guard !trimmedDeclaration.isEmpty else {

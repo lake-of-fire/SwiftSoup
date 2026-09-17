@@ -1,0 +1,68 @@
+{
+  "base_remote": "579430cf6909c4f3b3cb0da2150c01a4b32114aa",
+  "base_tree": "a69e2cb92c0bd9c44b3f4406f5328d9be618796a",
+  "combined_tree": "4842f71865f43154b9c8056403360c35e1040be5",
+  "repairs": [
+    {
+      "slug": "entity-buffer-bounds",
+      "suite": "EntityEscapeBufferBoundaryTest",
+      "title": "Bound entity escaping copies to the supplied UTF-8 buffer",
+      "branch": "fix/review-entity-buffer-bounds-20260917",
+      "test_tree": "d9b375cce2128556bfbeee442a5a861c9edd1008",
+      "fixed_tree": "774d9f7a169b1f05ff09750b6a8eb69163a7932e",
+      "files": [
+        "Sources/Entities.swift"
+      ],
+      "test_file": "Tests/SwiftSoupTests/EntityEscapeBufferBoundaryTest.swift"
+    },
+    {
+      "slug": "css-escaped-values",
+      "suite": "CSSEscapedValueSanitizationTest",
+      "title": "Validate CSS escape spellings before filtering blocked values",
+      "branch": "fix/review-css-escaped-values-20260917",
+      "test_tree": "06ab300d93a2300f857a50908b4d50ece1ee6537",
+      "fixed_tree": "e45373dc2961188078c7dc01e65a3070cd25d47a",
+      "files": [
+        "Sources/Whitelist.swift"
+      ],
+      "test_file": "Tests/SwiftSoupTests/CSSEscapedValueSanitizationTest.swift"
+    },
+    {
+      "slug": "cleaner-validation",
+      "suite": "CleanerConfiguredScopeValidationTest",
+      "title": "Validate configured head and body cleaning scopes without forced unwraps",
+      "branch": "fix/review-cleaner-validation-20260917",
+      "test_tree": "a36fa0cab53e78761d2a132777306edaf35b25f4",
+      "fixed_tree": "e3bb7a0b1bfc89ff9dccfc32e688dd43c33f5708",
+      "files": [
+        "Sources/Cleaner.swift"
+      ],
+      "test_file": "Tests/SwiftSoupTests/CleanerConfiguredScopeValidationTest.swift"
+    },
+    {
+      "slug": "document-lookup-stack",
+      "suite": "DocumentLookupStackSafetyTest",
+      "title": "Make document head and body lookup stack safe",
+      "branch": "fix/review-document-lookup-stack-20260917",
+      "test_tree": "e95b8e57573c6bd4acfd180e3d126d9f3deb5794",
+      "fixed_tree": "5a1705b55f2d10d4a2d4354e0562394338e376f5",
+      "files": [
+        "Sources/Document.swift"
+      ],
+      "test_file": "Tests/SwiftSoupTests/DocumentLookupStackSafetyTest.swift"
+    },
+    {
+      "slug": "nbsp-prefilters",
+      "suite": "TextNodeNBSPPrefilterTest",
+      "title": "Check every possible nonbreaking space in serialization prefilters",
+      "branch": "fix/review-nbsp-prefilters-20260917",
+      "test_tree": "9d790cafdbdb197ba0fbae6129962595063fae22",
+      "fixed_tree": "a764ec619da97b34874eef86e24a2b93761f2e80",
+      "files": [
+        "Sources/Entities.swift",
+        "Sources/TextNode.swift"
+      ],
+      "test_file": "Tests/SwiftSoupTests/TextNodeNBSPPrefilterTest.swift"
+    }
+  ]
+}
