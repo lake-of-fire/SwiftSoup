@@ -714,10 +714,10 @@ open class Element: Node {
     
     @inline(__always)
     private static func accumulateParents(_ el: Element, _ parents: Elements) {
-        let parent: Element? = el.parent()
-        if (parent != nil && !(parent!.tagNameUTF8() == Element.rootString)) {
-            parents.add(parent!)
-            accumulateParents(parent!, parents)
+        var current = el.parent()
+        while let parent = current, parent.tagNameUTF8() != Element.rootString {
+            parents.add(parent)
+            current = parent.parent()
         }
     }
     
