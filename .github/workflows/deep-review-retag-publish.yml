@@ -1,0 +1,135 @@
+name: Qualify and publish retag repair
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/deep-review-retag-publish.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e55d96e015e0861e0fbd0c2e53b0b63f880efa47
+          path: payload
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 578a56195b24332152c6c505b937b73193a921bb
+          path: product
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.1'
+      - name: Create tree-verified tests-only commit
+        working-directory: product
+        env:
+          REVIEW_ACTOR: ${{ github.actor }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          def run(*args):
+              subprocess.run(args, check=True)
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'retag-evidence'
+          evidence.mkdir()
+          assert git('rev-parse', 'HEAD') == '578a56195b24332152c6c505b937b73193a921bb'
+          assert git('rev-parse', 'HEAD^{tree}') == 'f625ec2717ed17b80d1e9048b33bdcf58ee6e0ec'
+          run('git', 'config', 'user.name', os.environ['REVIEW_ACTOR'])
+          run('git', 'config', 'user.email', os.environ['REVIEW_ACTOR'] + '@users.noreply.github.com')
+          path = pathlib.Path('Tests/SwiftSoupTests/RawTextRetagSourceReuseTest.swift')
+          assert not path.exists()
+          path.write_bytes(pathlib.Path('../payload/.github/review/continuation-tests/RawTextRetagSourceReuseTest.swift').read_bytes())
+          run('git', 'add', '--', str(path))
+          assert git('write-tree') == 'cefca7fbe133cb5df0abc605d325c98dda60644e'
+          run('git', 'commit', '-m', 'test: reproduce stale raw-text source reuse after tag changes')
+          (evidence / 'receipts.json').write_text(json.dumps({'base': '578a56195b24332152c6c505b937b73193a921bb', 'test_sha': git('rev-parse', 'HEAD'), 'test_tree': git('rev-parse', 'HEAD^{tree}')}, indent=2) + '\n')
+          PY
+      - name: Confirm regression fails before the fix
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift --version | tee "$RUNNER_TEMP/retag-evidence/swift-version.txt"
+          set +e
+          swift test -c release --jobs 2 --filter RawTextRetagSourceReuseTest 2>&1 | tee "$RUNNER_TEMP/retag-evidence/red.log"
+          result=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$result" > "$RUNNER_TEMP/retag-evidence/red.exit"
+          test "$result" -eq 1
+          grep -q 'Executed 4 tests, with 72 failures (0 unexpected)' "$RUNNER_TEMP/retag-evidence/red.log"
+          test -z "$(git status --porcelain)"
+      - name: Create tree-verified production repair
+        working-directory: product
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          def run(*args):
+              subprocess.run(args, check=True)
+          path = pathlib.Path('Sources/Element.swift')
+          source = path.read_text()
+          old = '''        _tag = try Tag.valueOf(tagName, ParseSettings.preserveCase) // preserve the requested tag case
+                  markTagQueryIndexDirty()
+          '''
+          old = old.replace('                  markTagQueryIndexDirty()', '        markTagQueryIndexDirty()').replace('\n          ', '\n')
+          # Restrict the replacement to this exact two-line anchor; the complete
+          # tree guard below also protects all surrounding source and metadata.
+          old = '        _tag = try Tag.valueOf(tagName, ParseSettings.preserveCase) // preserve the requested tag case\n        markTagQueryIndexDirty()\n'
+          new = ('        let wasRawText = serializesAsRawText()\n'
+                 '        _tag = try Tag.valueOf(tagName, ParseSettings.preserveCase) // preserve the requested tag case\n'
+                 '        if wasRawText != serializesAsRawText() {\n'
+                 '            // The same text needs different lexical escaping in its new context.\n'
+                 '            // Parent invalidation alone does not prevent clean child-source reuse.\n'
+                 '            for child in childNodes where child is TextNode {\n'
+                 '                child.markSourceDirty()\n'
+                 '            }\n'
+                 '        }\n'
+                 '        markTagQueryIndexDirty()\n')
+          assert source.count(old) == 1
+          path.write_text(source.replace(old, new))
+          run('git', 'add', '--', str(path))
+          run('git', 'diff', '--cached', '--check')
+          assert git('write-tree') == 'cbfc5b8946bab3de039c421dab0ac43ce458e1f6'
+          run('git', 'commit', '-m', 'fix: invalidate text source slices when retagging changes escaping context')
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'retag-evidence'
+          receipt = json.loads((evidence / 'receipts.json').read_text())
+          receipt.update({'fix_sha': git('rev-parse', 'HEAD'), 'fixed_tree': git('rev-parse', 'HEAD^{tree}'), 'branch': 'fix/review-rawtext-retag-source-20260917'})
+          (evidence / 'receipts.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          (evidence / 'manifest.txt').write_text(git('ls-tree', '-r', 'HEAD') + '\n')
+          (evidence / 'patch.diff').write_text(subprocess.check_output(['git', 'diff', '--full-index', receipt['base'], 'HEAD'], text=True))
+          run('git', 'archive', '--format=tar.gz', '--output=' + str(evidence / 'source.tar.gz'), 'HEAD')
+          print(json.dumps(receipt, indent=2))
+          PY
+      - name: Full release qualification on exact final source
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -c release --jobs 2 2>&1 | tee "$RUNNER_TEMP/retag-evidence/green-release.log"
+          grep -q 'Executed 1396 tests, with 17 tests skipped and 0 failures' "$RUNNER_TEMP/retag-evidence/green-release.log"
+          test "$(git rev-parse HEAD^{tree})" = cbfc5b8946bab3de039c421dab0ac43ce458e1f6
+          test -z "$(git status --porcelain)"
+      - name: Publish only the new repair branch
+        working-directory: product
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'retag-evidence'
+          receipt = json.loads((evidence / 'receipts.json').read_text())
+          ref = 'refs/heads/' + receipt['branch']
+          assert not subprocess.check_output(['git', 'ls-remote', '--heads', 'origin', ref], text=True).strip()
+          subprocess.run(['git', 'push', 'origin', receipt['fix_sha'] + ':' + ref], check=True)
+          actual = subprocess.check_output(['git', 'ls-remote', '--heads', 'origin', ref], text=True).split()[0]
+          assert actual == receipt['fix_sha']
+          (evidence / 'published.txt').write_text('New branch verified. No existing branch changed, no merge or force push.\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swiftsoup-retag-review-evidence
+          path: ${{ runner.temp }}/retag-evidence/
+          retention-days: 14
