@@ -1,0 +1,58 @@
+name: Publish Element.parents stack repair
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/publish-parents-stack-20260917.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish exact reviewed repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='fix/review-element-parents-stack-20260917'
+          expected_head='98f8e9ed738d07e573c7e4a960b67042ede50ab0'
+          expected_test_tree='b979e5c270797ea174a3507db2cbbd8efa4a67b6'
+          expected_fixed_tree='80c397a2e0d8ef89c3cf2c79fa8d3204d77a9c6e'
+          git fetch origin "refs/heads/$branch"
+          test "$(git rev-parse FETCH_HEAD)" = "$expected_head"
+          test "$(git rev-parse FETCH_HEAD^{tree})" = "$expected_test_tree"
+          dir="$(mktemp -d)"
+          git worktree add --detach "$dir" FETCH_HEAD
+          cd "$dir"
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          cat > /tmp/parents.patch <<'PATCH'
+          diff --git a/Sources/Element.swift b/Sources/Element.swift
+          index b631593..65dabbc 100644
+          --- a/Sources/Element.swift
+          +++ b/Sources/Element.swift
+          @@ -714,10 +714,10 @@ open class Element: Node {
+               
+               @inline(__always)
+               private static func accumulateParents(_ el: Element, _ parents: Elements) {
+          -        let parent: Element? = el.parent()
+          -        if (parent != nil && !(parent!.tagNameUTF8() == Element.rootString)) {
+          -            parents.add(parent!)
+          -            accumulateParents(parent!, parents)
+          +        var current = el.parent()
+          +        while let parent = current, parent.tagNameUTF8() != Element.rootString {
+          +            parents.add(parent)
+          +            current = parent.parent()
+                   }
+               }
+               
+          PATCH
+          git apply --check /tmp/parents.patch
+          git apply /tmp/parents.patch
+          git add Sources/Element.swift
+          git commit -m 'fix: make Element.parents traversal stack safe'
+          test "$(git rev-parse HEAD^{tree})" = "$expected_fixed_tree"
+          git push origin "HEAD:refs/heads/$branch"
