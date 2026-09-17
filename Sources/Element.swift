@@ -2285,14 +2285,21 @@ open class Element: Node {
      - returns: true if element has non-blank text content.
      */
     public func hasText() -> Bool {
-        for child: Node in childNodes {
-            if let textNode = (child as? TextNode) {
-                if (!textNode.isBlank()) {
+        // Preserve the recursive implementation's depth-first child order without
+        // consuming one call frame per element on deeply nested documents.
+        var pending: [Node] = []
+        pending.reserveCapacity(childNodes.count)
+        for child in childNodes.reversed() {
+            pending.append(child)
+        }
+        while let node = pending.popLast() {
+            if let textNode = node as? TextNode {
+                if !textNode.isBlank() {
                     return true
                 }
-            } else if let el = (child as? Element) {
-                if (el.hasText()) {
-                    return true
+            } else if let element = node as? Element {
+                for child in element.childNodes.reversed() {
+                    pending.append(child)
                 }
             }
         }
