@@ -2188,6 +2188,47 @@ open class Element: Node {
         return Element.containsTextASCII(needleLower, in: ownTextUTF8())
     }
 
+    private struct AsciiKMPMatcher {
+        let needle: [UInt8]
+        let lps: [Int]
+        var j: Int = 0
+
+        init(_ needle: [UInt8]) {
+            self.needle = needle
+            var lps = [Int](repeating: 0, count: needle.count)
+            var length = 0
+            var i = 1
+            while i < needle.count {
+                if needle[i] == needle[length] {
+                    length += 1
+                    lps[i] = length
+                    i += 1
+                } else if length != 0 {
+                    length = lps[length - 1]
+                } else {
+                    lps[i] = 0
+                    i += 1
+                }
+            }
+            self.lps = lps
+        }
+
+        @inline(__always)
+        mutating func feed(_ byte: UInt8) -> Bool {
+            let c = Attributes.asciiLowercase(byte)
+            while j > 0 && c != needle[j] {
+                j = lps[j - 1]
+            }
+            if c == needle[j] {
+                j += 1
+                if j == needle.count {
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
     private static func containsTextASCII(_ needleLower: [UInt8], in text: [UInt8]) -> Bool {
         guard !needleLower.isEmpty else { return false }
         // Reuse the public getters' normalization instead of maintaining a
@@ -2195,7 +2236,17 @@ open class Element: Node {
         // Byte matching is equivalent to String.contains only for ASCII text:
         // Unicode lowercasing and grapheme boundaries can change the answer.
         if StringUtil.isAscii(text) {
-            return StringUtil.containsLowercaseAscii(text, needleLower)
+            guard needleLower.count <= text.count else { return false }
+            // Keep the bounded short-needle loop cheap, but retain the old
+            // streaming matcher's linear worst case for long/repeated prefixes.
+            if needleLower.count <= 16 {
+                return StringUtil.containsLowercaseAscii(text, needleLower)
+            }
+            var matcher = AsciiKMPMatcher(needleLower)
+            for byte in text {
+                if matcher.feed(byte) { return true }
+            }
+            return false
         }
         return String(decoding: text, as: UTF8.self).lowercased()
             .contains(String(decoding: needleLower, as: UTF8.self))
