@@ -1,0 +1,30 @@
+name: Validate CSS escaped-value sanitizer repair
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/validate-css-escaped-values-20260917.yml]
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify red green and full suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach 686d057398a60711c5ff20a36a28e45bdc7923ed
+          set +e
+          swift test -j 4 --filter CSSEscapedValueSanitizationTest > /tmp/red.log 2>&1
+          red=$?
+          set -e
+          cat /tmp/red.log
+          test "$red" -ne 0
+          grep -Eq 'failed|XCTAssert|error:' /tmp/red.log
+          git checkout --detach e7aeb20c618fc6d62ea568399d246f3608a1609f
+          swift test -j 4 --filter CSSEscapedValueSanitizationTest
+          swift test -j 4
