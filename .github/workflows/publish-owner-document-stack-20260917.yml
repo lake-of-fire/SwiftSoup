@@ -1,0 +1,78 @@
+name: Publish ownerDocument stack repair
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/publish-owner-document-stack-20260917.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish exact reviewed repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='fix/review-owner-document-stack-20260917'
+          expected_head='67695d036488bdc066743280eb13cedc198c4d0f'
+          expected_test_tree='1c367d9039efbad3dd4b22d9d688b4bc7dd3801c'
+          expected_fixed_tree='0cbb581cf9b7cfb897f7f1a61cdb947732edcb84'
+          git fetch origin "refs/heads/$branch"
+          test "$(git rev-parse FETCH_HEAD)" = "$expected_head"
+          test "$(git rev-parse FETCH_HEAD^{tree})" = "$expected_test_tree"
+          dir="$(mktemp -d)"
+          git worktree add --detach "$dir" FETCH_HEAD
+          cd "$dir"
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          cat > /tmp/ownerdoc.patch <<'PATCH'
+          diff --git a/Sources/Node.swift b/Sources/Node.swift
+          index b653883..cbe772c 100644
+          --- a/Sources/Node.swift
+          +++ b/Sources/Node.swift
+          @@ -493,7 +493,33 @@ open class Node: Equatable, Hashable {
+                   if let document = self as? Document {
+                       return document
+                   }
+          -        return parentNode?.ownerDocument()
+          +
+          +        // Walk built-in parent links iteratively so ordinary deep DOMs do not
+          +        // consume one call frame per ancestor. Preserve the historical virtual
+          +        // dispatch contract at custom subclass boundaries.
+          +        var node = parentNode
+          +        while let current = node {
+          +            if let document = current as? Document {
+          +                // A Document subclass may override ownerDocument() to project a
+          +                // logical owner; preserve that virtual-dispatch contract.
+          +                return document.ownerDocument()
+          +            }
+          +            let currentType = type(of: current)
+          +            let isBuiltIn =
+          +                currentType == Node.self ||
+          +                currentType == Element.self ||
+          +                currentType == FormElement.self ||
+          +                currentType == TextNode.self ||
+          +                currentType == DataNode.self ||
+          +                currentType == Comment.self ||
+          +                currentType == DocumentType.self ||
+          +                currentType == XmlDeclaration.self
+          +            if !isBuiltIn {
+          +                return current.ownerDocument()
+          +            }
+          +            node = current.parentNode
+          +        }
+          +        return nil
+               }
+               
+               /// Internal stack-safe owner lookup for source tracking and source reuse.
+          PATCH
+          git apply --check /tmp/ownerdoc.patch
+          git apply /tmp/ownerdoc.patch
+          git add Sources/Node.swift
+          git commit -m 'fix: make public ownerDocument lookup stack safe'
+          test "$(git rev-parse HEAD^{tree})" = "$expected_fixed_tree"
+          git push origin "HEAD:refs/heads/$branch"
