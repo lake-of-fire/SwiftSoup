@@ -1,0 +1,58 @@
+name: Qualify reviewed text refinement
+on:
+  push:
+    branches: [audit/deep-review-source-20260917]
+    paths: [.github/workflows/deep-review-refine-text.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 5169ff5ece67a39284ce40c498e66efed89a7dec
+          fetch-depth: 3
+      - name: Retain the existing linear matcher without its incorrect normalizer
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess, textwrap
+          path = Path('Sources/Element.swift')
+          source = path.read_text()
+          original = subprocess.check_output(['git', 'show', '5257ab06b89a59895c52cd85098380dd8a47f9d8:Sources/Element.swift'], text=True)
+          start = original.index('    private struct AsciiKMPMatcher {')
+          end = original.index('    @inline(__always)\n    private static func emitNormalizedSlice(', start)
+          matcher = original[start:end].replace('Element.lowerAscii(byte)', 'Attributes.asciiLowercase(byte)')
+          anchor = '    private static func containsTextASCII(_ needleLower: [UInt8], in text: [UInt8]) -> Bool {'
+          assert source.count(anchor) == 1
+          source = source.replace(anchor, matcher + anchor)
+          old = '        if StringUtil.isAscii(text) {\n            return StringUtil.containsLowercaseAscii(text, needleLower)\n        }\n'
+          new = '        if StringUtil.isAscii(text) {\n            guard needleLower.count <= text.count else { return false }\n            // Keep the bounded short-needle loop cheap, but retain the old\n            // streaming matcher\'s linear worst case for long/repeated prefixes.\n            if needleLower.count <= 16 {\n                return StringUtil.containsLowercaseAscii(text, needleLower)\n            }\n            var matcher = AsciiKMPMatcher(needleLower)\n            for byte in text {\n                if matcher.feed(byte) { return true }\n            }\n            return false\n        }\n'
+          assert source.count(old) == 1
+          path.write_text(source.replace(old, new))
+          path = Path('Tests/SwiftSoupTests/ContainsTextParityTest.swift')
+          source = path.read_text()
+          anchor = '    func testCachedContainsResultsUpdateAfterTextMutation() throws {'
+          test = r'''func testLongRepeatedPrefixesAndOverlappingMatches() throws {
+              let prefix = String(repeating: "a", count: 4_096)
+              let needle = String(repeating: "a", count: 256)
+              try assertParity("<p>\(prefix)<b></b>ab</p>", needles: [needle + "b", needle + "c", needle.uppercased()])
+              try assertParity("<p>abababab<b></b>ababababac</p>", needles: ["ababababababababac", "ababababababababaa"])
+          }
+
+          '''
+          assert source.count(anchor) == 1
+          path.write_text(source.replace(anchor, textwrap.indent(test, '    ') + anchor))
+          subprocess.run(['git', 'add', 'Sources/Element.swift', 'Tests/SwiftSoupTests/ContainsTextParityTest.swift'], check=True)
+          tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert tree == '4aafe2a8ddefe3d500a594363229551da6dc0037', tree
+      - name: Publish verified candidate objects without changing PR refs
+        run: |
+          git diff --cached --check
+          git config user.name 'SwiftSoup Review'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: retain linear matching for long normalized-text needles'
+          git push origin HEAD:refs/heads/audit/review-text-refinement-20260917
+          git rev-parse HEAD
