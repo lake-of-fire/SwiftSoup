@@ -3,6 +3,9 @@ on:
   push:
     branches: [audit/review-sanitizer-bounds-20260917]
     paths: [.github/workflows/review-more-publication.yml]
+concurrency:
+  group: swiftsoup-five-review-repairs-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -16,6 +19,12 @@ jobs:
           fetch-depth: 0
       - name: Install publication helper runtime
         run: apt-get update && apt-get install -y --no-install-recommends python3
+      - name: Configure exact container checkout and scratch worktree ownership paths
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          for name in entity-buffer-bounds css-escaped-values cleaner-validation document-lookup-stack nbsp-prefilters review-combined; do
+            git config --global --add safe.directory "$RUNNER_TEMP/$name"
+          done
       - name: Verify exact independent trees and release-test composition before publication
         run: python3 .github/deep-review-more/publish.py
       - uses: actions/upload-artifact@v4
