@@ -1,0 +1,30 @@
+name: Validate NBSP prefilter repair
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/validate-nbsp-prefilters-20260917.yml]
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify red green and full suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach e8a23fff6d8d5e49edc1972490290342167413a9
+          set +e
+          swift test -j 4 --filter TextNodeNBSPPrefilterTest > /tmp/red.log 2>&1
+          red=$?
+          set -e
+          cat /tmp/red.log
+          test "$red" -ne 0
+          grep -Eq 'failed|XCTAssert|error:' /tmp/red.log
+          git checkout --detach ac2a9804db5ae9f9d2837beefd26f7bc2b73081e
+          swift test -j 4 --filter TextNodeNBSPPrefilterTest
+          swift test -j 4
