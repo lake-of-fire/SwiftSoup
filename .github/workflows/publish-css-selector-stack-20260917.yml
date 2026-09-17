@@ -1,0 +1,80 @@
+name: Publish cssSelector stack repair
+on:
+  push:
+    branches: [audit/deep-review-continuation-20260917]
+    paths: [.github/workflows/publish-css-selector-stack-20260917.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish exact reviewed repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='fix/review-css-selector-stack-20260917'
+          expected_head='b4b9a526a1bc80585a521e9e7760e9b00659027c'
+          expected_test_tree='3990ab24288d8e9dfe19e841adfa025e585b4b31'
+          expected_fixed_tree='8144b6df8b18b6f37ed4cf88957366299f7ac6a3'
+          git fetch origin "refs/heads/$branch"
+          test "$(git rev-parse FETCH_HEAD)" = "$expected_head"
+          test "$(git rev-parse FETCH_HEAD^{tree})" = "$expected_test_tree"
+          dir="$(mktemp -d)"
+          git worktree add --detach "$dir" FETCH_HEAD
+          cd "$dir"
+          git config user.name 'Alex Ehlke'
+          git config user.email 'alex.ehlke@gmail.com'
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Sources/Element.swift')
+          s = p.read_text()
+          start = s.index('    public func cssSelector() throws -> String {')
+          end = s.index('\n    private static func cssEscapeIdentifier', start)
+          new = '''    public func cssSelector() throws -> String {
+                  var current: Element = self
+                  var descendantSegments: [String] = []
+                  descendantSegments.reserveCapacity(8)
+          
+                  while true {
+                      let elementId = current.id()
+                      if !elementId.isEmpty {
+                          return "#" + Element.cssEscapeIdentifier(elementId) + descendantSegments.reversed().joined()
+                      }
+          
+                      // Translate HTML namespace ns:tag to CSS namespace syntax ns|tag
+                      let tagName = current.tagName().replacingOccurrences(of: ":", with: "|")
+                      var selector = tagName
+                      let classes = try current.classNames().map(Element.cssEscapeIdentifier).joined(separator: ".")
+                      if !classes.isEmpty {
+                          selector.append(".")
+                          selector.append(classes)
+                      }
+          
+                      // Preserve the recursive implementation's virtual parent() call
+                      // sequence. Custom Element subclasses can observe these calls.
+                      let existenceParent = current.parent()
+                      if existenceParent == nil || ((current.parent() as? Document) != nil) {
+                          return selector + descendantSegments.reversed().joined()
+                      }
+          
+                      selector.insert(contentsOf: " > ", at: selector.startIndex)
+                      if try current.parent()!.select(selector).array().count > 1 {
+                          selector.append(":nth-child(\\(try current.elementSiblingIndex() + 1))")
+                      }
+                      descendantSegments.append(selector)
+                      current = current.parent()!
+                  }
+              }
+          '''
+          p.write_text(s[:start] + new + s[end:])
+          PY
+          git diff --check
+          git add Sources/Element.swift
+          git commit -m 'fix: make cssSelector ancestor traversal stack safe'
+          test "$(git rev-parse HEAD^{tree})" = "$expected_fixed_tree"
+          git push origin "HEAD:refs/heads/$branch"
