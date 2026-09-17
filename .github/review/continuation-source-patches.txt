@@ -1,0 +1,331 @@
+===unicode-cursors===
+diff --git a/Sources/CharacterReader.swift b/Sources/CharacterReader.swift
+index 58f20c58afeba6b68bd0af855d2bea16d59bfde4..bd8dd0d88a53731ae91541c9cd77fb5124a41867 100644
+--- a/Sources/CharacterReader.swift
++++ b/Sources/CharacterReader.swift
+@@ -241,13 +241,14 @@ public final class CharacterReader {
+     public func unconsume() {
+         guard pos > start else { return }
+         
+-        var utf8Decoder = UTF8()
+         var index = pos
+         var scalarLength = 1
+         
+         // Decode previous scalar from current position
+         while index > start {
+             index -= 1
++            // UTF8 decoders buffer input; each new iterator needs fresh state.
++            var utf8Decoder = UTF8()
+             var iterator = input[index..<pos].makeIterator()
+             switch utf8Decoder.decode(&iterator) {
+             case .scalarValue(let scalar):
+@@ -443,7 +444,6 @@ public final class CharacterReader {
+             break
+         }
+ 
+-        var utf8Decoder = UTF8()
+         while pos < end {
+             let firstByte = input[pos]
+             if firstByte < Self.asciiUpperLimitByte {
+@@ -454,6 +454,8 @@ public final class CharacterReader {
+                 return cacheString(start, pos)
+             }
+ 
++            // UTF8 decoders buffer input; each new iterator needs fresh state.
++            var utf8Decoder = UTF8()
+             var iterator = input[pos...].makeIterator()
+             switch utf8Decoder.decode(&iterator) {
+             case .scalarValue(let scalar) where CharacterSet.letters.contains(scalar):
+@@ -480,7 +482,6 @@ public final class CharacterReader {
+             break
+         }
+ 
+-        var utf8Decoder = UTF8()
+         letterLoop: while pos < end {
+             let firstByte = input[pos]
+             if firstByte < Self.asciiUpperLimitByte {
+@@ -491,6 +492,8 @@ public final class CharacterReader {
+                 break letterLoop
+             }
+ 
++            // UTF8 decoders buffer input; each new iterator needs fresh state.
++            var utf8Decoder = UTF8()
+             var iterator = input[pos...].makeIterator()
+             switch utf8Decoder.decode(&iterator) {
+             case .scalarValue(let scalar) where CharacterSet.letters.contains(scalar):
+@@ -523,6 +526,8 @@ public final class CharacterReader {
+                 break digitLoop
+             }
+ 
++            // UTF8 decoders buffer input; each new iterator needs fresh state.
++            var utf8Decoder = UTF8()
+             var iterator = input[pos...].makeIterator()
+             switch utf8Decoder.decode(&iterator) {
+             case .scalarValue(let scalar) where CharacterSet.decimalDigits.contains(scalar):
+@@ -553,7 +558,6 @@ public final class CharacterReader {
+             break
+         }
+ 
+-        var utf8Decoder = UTF8()
+         while pos < end {
+             let firstByte = input[pos]
+             if firstByte < Self.asciiUpperLimitByte {
+@@ -567,6 +571,8 @@ public final class CharacterReader {
+                 return cacheString(start, pos)
+             }
+ 
++            // UTF8 decoders buffer input; each new iterator needs fresh state.
++            var utf8Decoder = UTF8()
+             var iterator = input[pos...].makeIterator()
+             switch utf8Decoder.decode(&iterator) {
+             case .scalarValue(let scalar) where hexCharacterSet.contains(scalar):
+===unicode-prefixes===
+diff --git a/Sources/CharacterReader.swift b/Sources/CharacterReader.swift
+index bd8dd0d88a53731ae91541c9cd77fb5124a41867..50bd2468a44adbc479324ea20802b6500a344a86 100644
+--- a/Sources/CharacterReader.swift
++++ b/Sources/CharacterReader.swift
+@@ -636,10 +636,9 @@ public final class CharacterReader {
+ 
+     public func matches(_ seq: [UInt8], ignoreCase: Bool = false, consume: Bool = false) -> Bool {
+         guard !seq.isEmpty else { return true }
+-        let endIndex = pos + seq.count
+-        guard endIndex <= end else { return false }
+-
+         if !ignoreCase {
++            guard seq.count <= end - pos else { return false }
++            let endIndex = pos + seq.count
+             if input[pos..<endIndex].elementsEqual(seq) {
+                 if consume { pos = endIndex }
+                 return true
+@@ -653,6 +652,7 @@ public final class CharacterReader {
+             break
+         }
+         if allAscii {
++            guard seq.count <= end - pos else { return false }
+             var idx = pos
+             for expected in seq {
+                 let actual = input[idx]
+@@ -665,30 +665,28 @@ public final class CharacterReader {
+             return true
+         }
+ 
++        // Non-ASCII operands must be compared as scalars, not individual UTF-8
++        // bytes. Keep each buffering decoder paired with one persistent iterator.
+         var current = pos
+-        var utf8Decoder = UTF8()
+-        var seqIterator = seq.makeIterator()
+-
+-        while let expectedByte = seqIterator.next() {
+-            guard current < end else { return false }
+-
+-            var inputIterator = input[current...].makeIterator()
+-            switch utf8Decoder.decode(&inputIterator) {
+-            case .scalarValue(let scalar):
+-                let expectedScalar = UnicodeScalar(expectedByte)
+-                guard scalar.properties.uppercaseMapping == expectedScalar.properties.uppercaseMapping else { return false }
+-                let scalarLength = UTF8.width(scalar)
+-                current += scalarLength
+-            case .emptyInput, .error:
++        var inputDecoder = UTF8()
++        var inputIterator = input[pos...].makeIterator()
++        var expectedDecoder = UTF8()
++        var expectedIterator = seq.makeIterator()
++        while true {
++            switch expectedDecoder.decode(&expectedIterator) {
++            case .scalarValue(let expected):
++                guard case .scalarValue(let actual) = inputDecoder.decode(&inputIterator),
++                      actual.properties.uppercaseMapping == expected.properties.uppercaseMapping else {
++                    return false
++                }
++                current += UTF8.width(actual)
++            case .emptyInput:
++                if consume { pos = current }
++                return true
++            case .error:
+                 return false
+             }
+         }
+-
+-        if consume {
+-            pos = current
+-        }
+-
+-        return true
+     }
+     
+     @inline(__always)
+===empty-reader-search===
+diff --git a/Sources/CharacterReader.swift b/Sources/CharacterReader.swift
+index 50bd2468a44adbc479324ea20802b6500a344a86..2e464009f76efe55cb00150f24036b5aca0744de 100644
+--- a/Sources/CharacterReader.swift
++++ b/Sources/CharacterReader.swift
+@@ -983,6 +983,8 @@ public final class CharacterReader {
+ 
+     public func nextIndexOf(_ targetUtf8: [UInt8]) -> Int? {
+         let targetCount = targetUtf8.count
++        // An empty delimiter matches the current position, including EOF.
++        if targetCount == 0 { return pos }
+         if targetCount == 1 {
+             return input[pos...].firstIndex(of: targetUtf8[0])
+         }
+===rcdata-modes===
+diff --git a/Sources/CharacterReader.swift b/Sources/CharacterReader.swift
+index 2e464009f76efe55cb00150f24036b5aca0744de..843b266a27a8057c9d29b280a2103d0408c89dd8 100644
+--- a/Sources/CharacterReader.swift
++++ b/Sources/CharacterReader.swift
+@@ -851,6 +851,36 @@ public final class CharacterReader {
+         return nextIndexOf(loScan) != nil || nextIndexOf(hiScan) != nil
+     }
+     
++    /// HTML end-tag lookahead must accept mixed ASCII case. The public
++    /// containsIgnoreCase APIs retain their legacy consistent-case scan.
++    /// Compare the two pieces in place, without allocating a combined needle.
++    @inline(__always)
++    func containsAsciiCaseInsensitive(prefix: [UInt8], suffix: [UInt8]) -> Bool {
++        let count = prefix.count + suffix.count
++        if count == 0 { return true }
++        guard count <= end - pos else { return false }
++        @inline(__always)
++        func lower(_ byte: UInt8) -> UInt8 {
++            return byte >= 65 && byte <= 90 ? byte + 32 : byte
++        }
++        let first = lower(prefix.first ?? suffix[0])
++        let lastStart = end - count
++        var candidate = pos
++        while candidate <= lastStart {
++            if lower(input[candidate]) == first {
++                var offset = 1
++                while offset < count {
++                    let expected = offset < prefix.count ? prefix[offset] : suffix[offset - prefix.count]
++                    if lower(input[candidate + offset]) != lower(expected) { break }
++                    offset += 1
++                }
++                if offset == count { return true }
++            }
++            candidate += 1
++        }
++        return false
++    }
++
+     @inline(__always)
+     public func containsIgnoreCase(_ seq: String) -> Bool {
+         return containsIgnoreCase(seq.utf8Array)
+diff --git a/Sources/HtmlTreeBuilderState.swift b/Sources/HtmlTreeBuilderState.swift
+index 798fdf23b32aa5ce1bf3e2e098cbe16038815019..6d14b6b0b00d028f3ba2d90ca9906e69078b3616 100644
+--- a/Sources/HtmlTreeBuilderState.swift
++++ b/Sources/HtmlTreeBuilderState.swift
+@@ -727,6 +727,10 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
+                     tb.framesetOk(false)
+                 case .meta, .script, .style, .title:
+                     return try tb.process(t, .InHead)
++                case .textarea:
++                    try HtmlTreeBuilderState.handleRcData(startTag, tb)
++                    // Retain SwiftSoup's existing leading-whitespace policy.
++                    tb.framesetOk(false)
+                 case .select:
+                     try reconstructFormattingIfNeeded()
+                     try tb.insert(startTag)
+diff --git a/Sources/TokeniserState.swift b/Sources/TokeniserState.swift
+index e72549b774b1e22b3db6be7fd9e8cce23e27599b..86b2d40cf587cbba83feb730349828c96112a2da 100644
+--- a/Sources/TokeniserState.swift
++++ b/Sources/TokeniserState.swift
+@@ -438,7 +438,7 @@ enum TokeniserState: TokeniserStateProtocol {
+                 } else if byte < TokeniserStateVars.asciiUpperLimitByte {
+                     if TokeniserStateVars.isAsciiAlpha(byte),
+                        let endTagName = t.appropriateEndTagName(),
+-                       !r.containsIgnoreCase(prefix: UTF8Arrays.endTagStart, suffix: endTagName) {
++                       !r.containsAsciiCaseInsensitive(prefix: UTF8Arrays.endTagStart, suffix: endTagName) {
+                         // diverge from spec: got a start tag, but there's no appropriate end tag (</title>), so rather than
+                         // consuming to EOF break out here
+                         t.tagPending = t.createTagPending(false).name(endTagName)
+@@ -452,7 +452,7 @@ enum TokeniserState: TokeniserStateProtocol {
+                     }
+                 } else if r.matchesLetter(),
+                           let endTagName = t.appropriateEndTagName(),
+-                          !r.containsIgnoreCase(prefix: UTF8Arrays.endTagStart, suffix: endTagName) {
++                          !r.containsAsciiCaseInsensitive(prefix: UTF8Arrays.endTagStart, suffix: endTagName) {
+                     // diverge from spec: got a start tag, but there's no appropriate end tag (</title>), so rather than
+                     // consuming to EOF break out here
+                     t.tagPending = t.createTagPending(false).name(endTagName)
+===rawtext-modes===
+diff --git a/Sources/Element.swift b/Sources/Element.swift
+index b6315933bfdea08be8d8a21b41adc33922115469..800d8be14f02cb00253026482a753fc2e174d886 100644
+--- a/Sources/Element.swift
++++ b/Sources/Element.swift
+@@ -2623,6 +2623,20 @@ open class Element: Node {
+         return self
+     }
+     
++    /// HTML raw-text parents cannot escape or pretty-print their child text:
++    /// character references and added whitespace would become literal content.
++    @inline(__always)
++    internal func serializesAsRawText() -> Bool {
++        switch _tag.tagId {
++        case .script, .style, .iframe, .noembed, .noframes, .plaintext:
++            return true
++        case .none:
++            return _tag.getNameNormalUTF8() == UTF8Arrays.xmp
++        default:
++            return false
++        }
++    }
++
+     @inline(__always)
+     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {
+         if (out.prettyPrint() && (_tag.formatAsBlock() || (parent() != nil && parent()!.tag().formatAsBlock()) || out.outline())) {
+@@ -2650,7 +2664,7 @@ open class Element: Node {
+     @inline(__always)
+     override func outerHtmlTail(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) {
+         if (!(childNodes.isEmpty && _tag.isSelfClosing())) {
+-            if (out.prettyPrint() && (!childNodes.isEmpty && (
++            if (out.prettyPrint() && !(out.syntax() == .html && serializesAsRawText()) && (!childNodes.isEmpty && (
+                 _tag.formatAsBlock() || (out.outline() && (childNodes.count > 1 || (childNodes.count == 1 && !(((childNodes[0] as? TextNode) != nil)))))
+             ))) {
+                 indent(accum, depth, out)
+diff --git a/Sources/HtmlTreeBuilderState.swift b/Sources/HtmlTreeBuilderState.swift
+index 6d14b6b0b00d028f3ba2d90ca9906e69078b3616..b85a8a9ef4247467fa6464cc86db212ec538e245 100644
+--- a/Sources/HtmlTreeBuilderState.swift
++++ b/Sources/HtmlTreeBuilderState.swift
+@@ -727,6 +727,11 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
+                     tb.framesetOk(false)
+                 case .meta, .script, .style, .title:
+                     return try tb.process(t, .InHead)
++                case .iframe:
++                    tb.framesetOk(false)
++                    try HtmlTreeBuilderState.handleRawtext(startTag, tb)
++                case .noembed:
++                    try HtmlTreeBuilderState.handleRawtext(startTag, tb)
+                 case .textarea:
+                     try HtmlTreeBuilderState.handleRcData(startTag, tb)
+                     // Retain SwiftSoup's existing leading-whitespace policy.
+@@ -897,7 +902,12 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
+                         nameSlice = startTag.normalNameSlice()
+                     }
+                     if let nameSlice = nameSlice {
+-                        if Constants.Formatters.contains(nameSlice) {
++                        if equalsSlice(UTF8Arrays.xmp, nameSlice) {
++                            try closePIfInButtonScope()
++                            try reconstructFormattingIfNeeded()
++                            tb.framesetOk(false)
++                            try HtmlTreeBuilderState.handleRawtext(startTag, tb)
++                        } else if Constants.Formatters.contains(nameSlice) {
+                             try reconstructFormattingIfNeeded()
+                             let el: Element = try tb.insert(startTag)
+                             tb.pushActiveFormattingElements(el)
+diff --git a/Sources/TextNode.swift b/Sources/TextNode.swift
+index 2d2f483116c623d9440a9eeed06d705f95bcf0f0..4c1533c879317fb35fa16701bacda1c10a76f5dc 100644
+--- a/Sources/TextNode.swift
++++ b/Sources/TextNode.swift
+@@ -273,6 +273,12 @@ open class TextNode: Node {
+     }
+ 
+     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {
++        if out.syntax() == .html,
++           let element = parentNode as? Element,
++           element.serializesAsRawText() {
++            accum.append(wholeTextSlice())
++            return
++        }
+ 		if (out.prettyPrint() &&
+ 			((siblingIndex == 0 && (parentNode as? Element) != nil &&  (parentNode as! Element).tag().formatAsBlock() && !isBlank()) ||
+                 (out.outline() && hasSiblingNodes() && !isBlank()) )) {
