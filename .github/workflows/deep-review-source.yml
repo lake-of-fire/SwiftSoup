@@ -1,0 +1,26 @@
+name: Deep review source snapshot
+on:
+  push:
+    branches: [audit/deep-review-source-20260917]
+    paths: [.github/workflows/deep-review-source.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1734b2052fbb7f9ee888c2cfcc8f529e593dd5b1
+          persist-credentials: false
+      - name: Archive exact reviewed source
+        run: |
+          mkdir -p "$RUNNER_TEMP/review-source"
+          git rev-parse HEAD > "$RUNNER_TEMP/review-source/HEAD.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/review-source/source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swiftsoup-deep-review-source-1734b205
+          path: ${{ runner.temp }}/review-source/
+          retention-days: 3
