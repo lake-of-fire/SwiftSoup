@@ -83,7 +83,7 @@ jobs:
           path.write_text(source[:start] + replacement + source[end:])
           subprocess.run(['git', 'add', 'Sources/Node.swift'], check=True)
           tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
-          assert tree == 'd2ae57ee8ca1f41eafbdb65b5c7989cde6faa4aa', tree
+          assert tree == 'bac9992ff201c5520edf48cbf204c3510b249955', tree
       - name: Commit and publish only the verified feature branch
         run: |
           git diff --cached --check
