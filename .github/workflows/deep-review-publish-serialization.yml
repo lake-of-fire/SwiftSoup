@@ -77,9 +77,9 @@ jobs:
               try outerHtmlFast(accum, depth, out, allowRawSource: false)
           }
           '''
-          # Dedent the literal's continuation lines to their Swift indentation.
+          # YAML removes its block indentation; restore the Swift member indent.
           lines = replacement.splitlines(keepends=True)
-          replacement = lines[0] + ''.join(line[6:] if line.startswith('      ') else line for line in lines[1:])
+          replacement = lines[0] + ''.join('    ' + line if line.strip() else line for line in lines[1:])
           path.write_text(source[:start] + replacement + source[end:])
           subprocess.run(['git', 'add', 'Sources/Node.swift'], check=True)
           tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
