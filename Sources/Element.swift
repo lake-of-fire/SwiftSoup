@@ -477,7 +477,15 @@ open class Element: Node {
     @discardableResult
     public func tagName(_ tagName: [UInt8]) throws -> Element {
         try Validate.notEmpty(string: tagName, msg: "Tag name must not be empty.")
+        let wasRawText = serializesAsRawText()
         _tag = try Tag.valueOf(tagName, ParseSettings.preserveCase) // preserve the requested tag case
+        if wasRawText != serializesAsRawText() {
+            // The same text needs different lexical escaping in its new context.
+            // Parent invalidation alone does not prevent clean child-source reuse.
+            for child in childNodes where child is TextNode {
+                child.markSourceDirty()
+            }
+        }
         markTagQueryIndexDirty()
         bumpTextMutationVersion()
         markSourceDirty()
@@ -714,10 +722,10 @@ open class Element: Node {
     
     @inline(__always)
     private static func accumulateParents(_ el: Element, _ parents: Elements) {
-        let parent: Element? = el.parent()
-        if (parent != nil && !(parent!.tagNameUTF8() == Element.rootString)) {
-            parents.add(parent!)
-            accumulateParents(parent!, parents)
+        var current = el.parent()
+        while let parent = current, parent.tagNameUTF8() != Element.rootString {
+            parents.add(parent)
+            current = parent.parent()
         }
     }
     
@@ -1114,32 +1122,39 @@ open class Element: Node {
      - returns: the CSS Path that can be used to retrieve the element in a selector.
      */
     public func cssSelector() throws -> String {
-        let elementId = id()
-        if !elementId.isEmpty {
-            return "#" + Element.cssEscapeIdentifier(elementId)
+        var current: Element = self
+        var descendantSegments: [String] = []
+        descendantSegments.reserveCapacity(8)
+
+        while true {
+            let elementId = current.id()
+            if !elementId.isEmpty {
+                return "#" + Element.cssEscapeIdentifier(elementId) + descendantSegments.reversed().joined()
+            }
+
+            // Translate HTML namespace ns:tag to CSS namespace syntax ns|tag
+            let tagName = current.tagName().replacingOccurrences(of: ":", with: "|")
+            var selector = tagName
+            let classes = try current.classNames().map(Element.cssEscapeIdentifier).joined(separator: ".")
+            if !classes.isEmpty {
+                selector.append(".")
+                selector.append(classes)
+            }
+
+            // Preserve the recursive implementation's virtual parent() call
+            // sequence. Custom Element subclasses can observe these calls.
+            let existenceParent = current.parent()
+            if existenceParent == nil || ((current.parent() as? Document) != nil) {
+                return selector + descendantSegments.reversed().joined()
+            }
+
+            selector.insert(contentsOf: " > ", at: selector.startIndex)
+            if try current.parent()!.select(selector).array().count > 1 {
+                selector.append(":nth-child(\(try current.elementSiblingIndex() + 1))")
+            }
+            descendantSegments.append(selector)
+            current = current.parent()!
         }
-        
-        // Translate HTML namespace ns:tag to CSS namespace syntax ns|tag
-        let tagName: String = self.tagName().replacingOccurrences(of: ":", with: "|")
-        var selector: String = tagName
-        let cl = try classNames()
-        let classes: String = cl.map(Element.cssEscapeIdentifier).joined(separator: ".")
-        if !classes.isEmpty {
-            selector.append(".")
-            selector.append(classes)
-        }
-        
-        if (parent() == nil || ((parent() as? Document) != nil)) // don't add Document to selector, as will always have a html node
-        {
-            return selector
-        }
-        
-        selector.insert(contentsOf: " > ", at: selector.startIndex)
-        if (try parent()!.select(selector).array().count > 1) {
-            selector.append(":nth-child(\(try elementSiblingIndex() + 1))")
-        }
-        
-        return try parent()!.cssSelector() + (selector)
     }
 
     private static func cssEscapeIdentifier(_ identifier: String) -> String {
@@ -2285,14 +2300,21 @@ open class Element: Node {
      - returns: true if element has non-blank text content.
      */
     public func hasText() -> Bool {
-        for child: Node in childNodes {
-            if let textNode = (child as? TextNode) {
-                if (!textNode.isBlank()) {
+        // Preserve the recursive implementation's depth-first child order without
+        // consuming one call frame per element on deeply nested documents.
+        var pending: [Node] = []
+        pending.reserveCapacity(childNodes.count)
+        for child in childNodes.reversed() {
+            pending.append(child)
+        }
+        while let node = pending.popLast() {
+            if let textNode = node as? TextNode {
+                if !textNode.isBlank() {
                     return true
                 }
-            } else if let el = (child as? Element) {
-                if (el.hasText()) {
-                    return true
+            } else if let element = node as? Element {
+                for child in element.childNodes.reversed() {
+                    pending.append(child)
                 }
             }
         }
@@ -2623,6 +2645,20 @@ open class Element: Node {
         return self
     }
     
+    /// HTML raw-text parents cannot escape or pretty-print their child text:
+    /// character references and added whitespace would become literal content.
+    @inline(__always)
+    internal func serializesAsRawText() -> Bool {
+        switch _tag.tagId {
+        case .script, .style, .iframe, .noembed, .noframes, .plaintext:
+            return true
+        case .none:
+            return _tag.getNameNormalUTF8() == UTF8Arrays.xmp
+        default:
+            return false
+        }
+    }
+
     @inline(__always)
     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {
         if (out.prettyPrint() && (_tag.formatAsBlock() || (parent() != nil && parent()!.tag().formatAsBlock()) || out.outline())) {
@@ -2650,7 +2686,7 @@ open class Element: Node {
     @inline(__always)
     override func outerHtmlTail(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) {
         if (!(childNodes.isEmpty && _tag.isSelfClosing())) {
-            if (out.prettyPrint() && (!childNodes.isEmpty && (
+            if (out.prettyPrint() && !(out.syntax() == .html && serializesAsRawText()) && (!childNodes.isEmpty && (
                 _tag.formatAsBlock() || (out.outline() && (childNodes.count > 1 || (childNodes.count == 1 && !(((childNodes[0] as? TextNode) != nil)))))
             ))) {
                 indent(accum, depth, out)

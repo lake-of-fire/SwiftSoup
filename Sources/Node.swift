@@ -493,7 +493,33 @@ open class Node: Equatable, Hashable {
         if let document = self as? Document {
             return document
         }
-        return parentNode?.ownerDocument()
+
+        // Walk built-in parent links iteratively so ordinary deep DOMs do not
+        // consume one call frame per ancestor. Preserve the historical virtual
+        // dispatch contract at custom subclass boundaries.
+        var node = parentNode
+        while let current = node {
+            if let document = current as? Document {
+                // A Document subclass may override ownerDocument() to project a
+                // logical owner; preserve that virtual-dispatch contract.
+                return document.ownerDocument()
+            }
+            let currentType = type(of: current)
+            let isBuiltIn =
+                currentType == Node.self ||
+                currentType == Element.self ||
+                currentType == FormElement.self ||
+                currentType == TextNode.self ||
+                currentType == DataNode.self ||
+                currentType == Comment.self ||
+                currentType == DocumentType.self ||
+                currentType == XmlDeclaration.self
+            if !isBuiltIn {
+                return current.ownerDocument()
+            }
+            node = current.parentNode
+        }
+        return nil
     }
 
     /// Internal stack-safe owner lookup for source tracking and source reuse.
@@ -1278,6 +1304,10 @@ open class Node: Equatable, Hashable {
         // BFS clone using index-based queue, preserving original nodes to avoid extra array copies.
         var queue: [(Node, Node)] = [(self, thisClone)]
         queue.reserveCapacity(8)
+        var formCopies: [(FormElement, FormElement)] = []
+        if let form = self as? FormElement, let formClone = thisClone as? FormElement {
+            formCopies.append((form, formClone))
+        }
         var idx = 0
         while idx < queue.count {
             let (originalParent, cloneParent) = queue[idx]
@@ -1290,6 +1320,9 @@ open class Node: Equatable, Hashable {
                 for child in originalChildren {
                     let childClone = child.copyForDeepClone(parent: cloneParent)
                     newChildren.append(childClone)
+                    if let form = child as? FormElement, let formClone = childClone as? FormElement {
+                        formCopies.append((form, formClone))
+                    }
                     if child.hasChildNodes() {
                         queue.append((child, childClone))
                     }
@@ -1300,6 +1333,9 @@ open class Node: Equatable, Hashable {
             }
         }
         
+        if !formCopies.isEmpty {
+            FormElement.rebindClonedControlAssociations(formCopies, clonedParents: queue)
+        }
         return thisClone
     }
     

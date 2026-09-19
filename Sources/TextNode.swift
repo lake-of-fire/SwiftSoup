@@ -273,6 +273,12 @@ open class TextNode: Node {
     }
 
     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {
+        if out.syntax() == .html,
+           let element = parentNode as? Element,
+           element.serializesAsRawText() {
+            accum.append(wholeTextSlice())
+            return
+        }
 		if (out.prettyPrint() &&
 			((siblingIndex == 0 && (parentNode as? Element) != nil &&  (parentNode as! Element).tag().formatAsBlock() && !isBlank()) ||
                 (out.outline() && hasSiblingNodes() && !isBlank()) )) {
@@ -297,13 +303,7 @@ open class TextNode: Node {
                     if memchr(base, Int32(TokeniserStateVars.ampersandByte), count) != nil { return true }
                     if memchr(base, Int32(TokeniserStateVars.lessThanByte), count) != nil { return true }
                     if memchr(base, Int32(TokeniserStateVars.greaterThanByte), count) != nil { return true }
-                    if let nbspLead = memchr(base, Int32(StringUtil.utf8NBSPLead), count) {
-                        let lead = nbspLead.assumingMemoryBound(to: UInt8.self)
-                        let idx = base.distance(to: lead)
-                        if idx + 1 < count, base[idx + 1] == StringUtil.utf8NBSPTrail {
-                            return true
-                        }
-                    }
+                    if Entities.containsNonBreakingSpace(buf) { return true }
                     return false
                 }
                 if !hasSpecial {
