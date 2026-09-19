@@ -795,8 +795,12 @@ open class Evaluator: @unchecked Sendable {
      */
     public final class IsRoot: Evaluator, @unchecked Sendable {
         public override func matches(_ root: Element, _ element: Element)throws->Bool {
-            let r: Element = ((root as? Document) != nil) ? root.child(0) : root
-            return element === r
+            if root is Document {
+                // Empty and comment-only documents have no document element.
+                // Do not turn a valid selector miss into an out-of-bounds trap.
+                return element === root.children().first()
+            }
+            return element === root
         }
         public override func toString() -> String {
             return ":root"

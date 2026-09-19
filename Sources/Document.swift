@@ -228,15 +228,16 @@ open class Document: Element {
 
     // fast method to get first by tag name, used for html, head, body finders
     private func findFirstElementByTagName(_ tag: [UInt8], _ node: Node) -> Element? {
-        if (node.nodeNameUTF8() == tag) {
-            return node as? Element
-        } else {
-            for child: Node in node.childNodes {
-                let found: Element? = findFirstElementByTagName(tag, child)
-                if (found != nil) {
-                    return found
-                }
+        // Use heap-backed traversal rather than one call frame per DOM level.
+        // Reverse children to retain the recursive walk's first-match order.
+        var pending: [Node] = [node]
+        while let current = pending.popLast() {
+            if current.nodeNameUTF8() == tag {
+                if let element = current as? Element { return element }
+                // A matching non-element name pruned that branch in the old walk.
+                continue
             }
+            pending.append(contentsOf: current.childNodes.reversed())
         }
         return nil
     }
