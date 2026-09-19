@@ -1122,32 +1122,39 @@ open class Element: Node {
      - returns: the CSS Path that can be used to retrieve the element in a selector.
      */
     public func cssSelector() throws -> String {
-        let elementId = id()
-        if !elementId.isEmpty {
-            return "#" + Element.cssEscapeIdentifier(elementId)
+        var current: Element = self
+        var descendantSegments: [String] = []
+        descendantSegments.reserveCapacity(8)
+
+        while true {
+            let elementId = current.id()
+            if !elementId.isEmpty {
+                return "#" + Element.cssEscapeIdentifier(elementId) + descendantSegments.reversed().joined()
+            }
+
+            // Translate HTML namespace ns:tag to CSS namespace syntax ns|tag
+            let tagName = current.tagName().replacingOccurrences(of: ":", with: "|")
+            var selector = tagName
+            let classes = try current.classNames().map(Element.cssEscapeIdentifier).joined(separator: ".")
+            if !classes.isEmpty {
+                selector.append(".")
+                selector.append(classes)
+            }
+
+            // Preserve the recursive implementation's virtual parent() call
+            // sequence. Custom Element subclasses can observe these calls.
+            let existenceParent = current.parent()
+            if existenceParent == nil || ((current.parent() as? Document) != nil) {
+                return selector + descendantSegments.reversed().joined()
+            }
+
+            selector.insert(contentsOf: " > ", at: selector.startIndex)
+            if try current.parent()!.select(selector).array().count > 1 {
+                selector.append(":nth-child(\(try current.elementSiblingIndex() + 1))")
+            }
+            descendantSegments.append(selector)
+            current = current.parent()!
         }
-        
-        // Translate HTML namespace ns:tag to CSS namespace syntax ns|tag
-        let tagName: String = self.tagName().replacingOccurrences(of: ":", with: "|")
-        var selector: String = tagName
-        let cl = try classNames()
-        let classes: String = cl.map(Element.cssEscapeIdentifier).joined(separator: ".")
-        if !classes.isEmpty {
-            selector.append(".")
-            selector.append(classes)
-        }
-        
-        if (parent() == nil || ((parent() as? Document) != nil)) // don't add Document to selector, as will always have a html node
-        {
-            return selector
-        }
-        
-        selector.insert(contentsOf: " > ", at: selector.startIndex)
-        if (try parent()!.select(selector).array().count > 1) {
-            selector.append(":nth-child(\(try elementSiblingIndex() + 1))")
-        }
-        
-        return try parent()!.cssSelector() + (selector)
     }
 
     private static func cssEscapeIdentifier(_ identifier: String) -> String {
