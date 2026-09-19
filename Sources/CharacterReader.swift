@@ -636,10 +636,9 @@ public final class CharacterReader {
 
     public func matches(_ seq: [UInt8], ignoreCase: Bool = false, consume: Bool = false) -> Bool {
         guard !seq.isEmpty else { return true }
-        let endIndex = pos + seq.count
-        guard endIndex <= end else { return false }
-
         if !ignoreCase {
+            guard seq.count <= end - pos else { return false }
+            let endIndex = pos + seq.count
             if input[pos..<endIndex].elementsEqual(seq) {
                 if consume { pos = endIndex }
                 return true
@@ -653,6 +652,7 @@ public final class CharacterReader {
             break
         }
         if allAscii {
+            guard seq.count <= end - pos else { return false }
             var idx = pos
             for expected in seq {
                 let actual = input[idx]
@@ -665,30 +665,28 @@ public final class CharacterReader {
             return true
         }
 
+        // Non-ASCII operands must be compared as scalars, not individual UTF-8
+        // bytes. Keep each buffering decoder paired with one persistent iterator.
         var current = pos
-        var utf8Decoder = UTF8()
-        var seqIterator = seq.makeIterator()
-
-        while let expectedByte = seqIterator.next() {
-            guard current < end else { return false }
-
-            var inputIterator = input[current...].makeIterator()
-            switch utf8Decoder.decode(&inputIterator) {
-            case .scalarValue(let scalar):
-                let expectedScalar = UnicodeScalar(expectedByte)
-                guard scalar.properties.uppercaseMapping == expectedScalar.properties.uppercaseMapping else { return false }
-                let scalarLength = UTF8.width(scalar)
-                current += scalarLength
-            case .emptyInput, .error:
+        var inputDecoder = UTF8()
+        var inputIterator = input[pos...].makeIterator()
+        var expectedDecoder = UTF8()
+        var expectedIterator = seq.makeIterator()
+        while true {
+            switch expectedDecoder.decode(&expectedIterator) {
+            case .scalarValue(let expected):
+                guard case .scalarValue(let actual) = inputDecoder.decode(&inputIterator),
+                      actual.properties.uppercaseMapping == expected.properties.uppercaseMapping else {
+                    return false
+                }
+                current += UTF8.width(actual)
+            case .emptyInput:
+                if consume { pos = current }
+                return true
+            case .error:
                 return false
             }
         }
-
-        if consume {
-            pos = current
-        }
-
-        return true
     }
     
     @inline(__always)
@@ -853,6 +851,36 @@ public final class CharacterReader {
         return nextIndexOf(loScan) != nil || nextIndexOf(hiScan) != nil
     }
     
+    /// HTML end-tag lookahead must accept mixed ASCII case. The public
+    /// containsIgnoreCase APIs retain their legacy consistent-case scan.
+    /// Compare the two pieces in place, without allocating a combined needle.
+    @inline(__always)
+    func containsAsciiCaseInsensitive(prefix: [UInt8], suffix: [UInt8]) -> Bool {
+        let count = prefix.count + suffix.count
+        if count == 0 { return true }
+        guard count <= end - pos else { return false }
+        @inline(__always)
+        func lower(_ byte: UInt8) -> UInt8 {
+            return byte >= 65 && byte <= 90 ? byte + 32 : byte
+        }
+        let first = lower(prefix.first ?? suffix[0])
+        let lastStart = end - count
+        var candidate = pos
+        while candidate <= lastStart {
+            if lower(input[candidate]) == first {
+                var offset = 1
+                while offset < count {
+                    let expected = offset < prefix.count ? prefix[offset] : suffix[offset - prefix.count]
+                    if lower(input[candidate + offset]) != lower(expected) { break }
+                    offset += 1
+                }
+                if offset == count { return true }
+            }
+            candidate += 1
+        }
+        return false
+    }
+
     @inline(__always)
     public func containsIgnoreCase(_ seq: String) -> Bool {
         return containsIgnoreCase(seq.utf8Array)
@@ -985,6 +1013,8 @@ public final class CharacterReader {
 
     public func nextIndexOf(_ targetUtf8: [UInt8]) -> Int? {
         let targetCount = targetUtf8.count
+        // An empty delimiter matches the current position, including EOF.
+        if targetCount == 0 { return pos }
         if targetCount == 1 {
             return input[pos...].firstIndex(of: targetUtf8[0])
         }
