@@ -1144,15 +1144,15 @@ open class Node: Equatable, Hashable {
               let range = sourceRange,
               range.isValid,
               let doc = ownerDocumentForInternalLookup(),
-              let source = sourceBuffer?.bytes ?? doc.sourceBuffer?.bytes
+              let source = sourceBuffer ?? doc.sourceBuffer
         else {
             return nil
         }
-        if !out.canReuseSource(parsedAsXml: doc.parsedAsXml)
-            || range.end > source.count {
+        if !out.canReuseSource(parsedAsXml: source.parsedAsXml)
+            || range.end > source.bytes.count {
             return nil
         }
-        return source[range.start..<range.end]
+        return source.bytes[range.start..<range.end]
     }
 
     @inline(__always)
