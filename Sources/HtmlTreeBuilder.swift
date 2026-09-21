@@ -133,12 +133,15 @@ class HtmlTreeBuilder: TreeBuilder {
             }
             
             // initialise the tokeniser state:
+            let contextTagName = context.tagNameNormalUTF8()
             if context.namespace() != .html {
                 tokeniser.transition(TokeniserState.Data)
-            } else if TagSets.titleTextarea.contains(context.tagNameUTF8()) || TagSets.frames.contains(context.tagNameUTF8()) {
+            } else if TagSets.titleTextarea.contains(contextTagName) {
                 tokeniser.transition(TokeniserState.Rcdata)
+            } else if TagSets.frames.contains(contextTagName) {
+                tokeniser.transition(TokeniserState.Rawtext)
             } else {
-                switch context.tagNameUTF8() {
+                switch contextTagName {
                 case UTF8Arrays.script:
                     tokeniser.transition(TokeniserState.ScriptData)
                 case UTF8Arrays.noscript:
