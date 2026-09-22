@@ -4,7 +4,10 @@ import PackageDescription
 
 let package = Package(
     name: "SwiftSoup",
-    platforms: [.macOS(.v10_15), .iOS(.v13), .tvOS(.v13), .watchOS(.v6)],
+    // Xcode 27 no longer supports building macOS targets below 12. The Reader
+    // still supports iOS 15 independently; this only raises SwiftSoup's macOS
+    // package floor to the toolchain's minimum supported value.
+    platforms: [.macOS(.v12), .iOS(.v13), .tvOS(.v13), .watchOS(.v6)],
     products: [
         .library(name: "SwiftSoup", targets: ["SwiftSoup"]),
         .executable(name: "SwiftSoupProfile", targets: ["SwiftSoupProfile"])
