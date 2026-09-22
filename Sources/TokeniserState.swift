@@ -53,7 +53,6 @@ public class TokeniserStateVars {
     @usableFromInline static let lowerZByte: UInt8 = 0x7A
     @usableFromInline static let asciiUpperLimitByte: UInt8 = 0x80
     @usableFromInline static let asciiCaseDeltaByte: UInt8 = 0x20
-    @usableFromInline static let maxByte: UInt8 = 0xFF
     @usableFromInline static let lowerBByte: UInt8 = 0x62
     @usableFromInline static let lowerCByte: UInt8 = 0x63
     @usableFromInline static let lowerDByte: UInt8 = 0x64
@@ -348,7 +347,8 @@ enum TokeniserState: TokeniserStateProtocol {
                 break
             default:
                 let dataStart = r.pos
-                let data = r.consumeToAnyOfTwoSlice(TokeniserStateVars.nullByte, TokeniserStateVars.maxByte)
+                // EOF is tracked by the reader bounds; 0xFF is still input.
+                let data = r.consumeToAnyOfOneSlice(TokeniserStateVars.nullByte)
                 t.emitRaw(data, start: dataStart, end: r.pos)
                 break
             }
@@ -438,7 +438,7 @@ enum TokeniserState: TokeniserStateProtocol {
                 } else if byte < TokeniserStateVars.asciiUpperLimitByte {
                     if TokeniserStateVars.isAsciiAlpha(byte),
                        let endTagName = t.appropriateEndTagName(),
-                       !r.containsIgnoreCase(prefix: UTF8Arrays.endTagStart, suffix: endTagName) {
+                       !r.containsAsciiCaseInsensitive(prefix: UTF8Arrays.endTagStart, suffix: endTagName) {
                         // diverge from spec: got a start tag, but there's no appropriate end tag (</title>), so rather than
                         // consuming to EOF break out here
                         t.tagPending = t.createTagPending(false).name(endTagName)
@@ -452,7 +452,7 @@ enum TokeniserState: TokeniserStateProtocol {
                     }
                 } else if r.matchesLetter(),
                           let endTagName = t.appropriateEndTagName(),
-                          !r.containsIgnoreCase(prefix: UTF8Arrays.endTagStart, suffix: endTagName) {
+                          !r.containsAsciiCaseInsensitive(prefix: UTF8Arrays.endTagStart, suffix: endTagName) {
                     // diverge from spec: got a start tag, but there's no appropriate end tag (</title>), so rather than
                     // consuming to EOF break out here
                     t.tagPending = t.createTagPending(false).name(endTagName)

@@ -13,11 +13,16 @@ internal final class SourceBuffer {
     let bytes: [UInt8]
     @usableFromInline
     let storage: ByteStorage
+    // A moved node keeps its original source, even when its new owner uses a
+    // different parsing syntax. Validate reuse against this immutable provenance.
+    @usableFromInline
+    let parsedAsXml: Bool
     
     @usableFromInline
-    init(_ bytes: [UInt8]) {
+    init(_ bytes: [UInt8], parsedAsXml: Bool) {
         self.bytes = bytes
         self.storage = ByteStorage(array: bytes)
+        self.parsedAsXml = parsedAsXml
     }
 }
 
@@ -228,15 +233,16 @@ open class Document: Element {
 
     // fast method to get first by tag name, used for html, head, body finders
     private func findFirstElementByTagName(_ tag: [UInt8], _ node: Node) -> Element? {
-        if (node.nodeNameUTF8() == tag) {
-            return node as? Element
-        } else {
-            for child: Node in node.childNodes {
-                let found: Element? = findFirstElementByTagName(tag, child)
-                if (found != nil) {
-                    return found
-                }
+        // Use heap-backed traversal rather than one call frame per DOM level.
+        // Reverse children to retain the recursive walk's first-match order.
+        var pending: [Node] = [node]
+        while let current = pending.popLast() {
+            if current.nodeNameUTF8() == tag {
+                if let element = current as? Element { return element }
+                // A matching non-element name pruned that branch in the old walk.
+                continue
             }
+            pending.append(contentsOf: current.childNodes.reversed())
         }
         return nil
     }
@@ -779,32 +785,36 @@ open class Document: Element {
 	}
 
     @inline(__always)
-	public override func copy(parent: Node?) -> Node {
+    public override func copy(parent: Node?) -> Node {
 		let clone = Document(_location)
 		return copy(clone: clone, parent: parent)
 	}
 
+    public override func copy(clone: Node) -> Node {
+        copyDocumentState(to: clone as! Document)
+        return super.copy(clone: clone)
+    }
+
     override func copyForDeepClone(parent: Node?) -> Node {
         let clone = Document(_location)
-        clone._outputSettings = _outputSettings.copy() as! OutputSettings
-        clone._quirksMode = _quirksMode
-        clone.updateMetaCharset = updateMetaCharset
-        clone.sourceBuffer = nil
-        clone.parsedAsXml = parsedAsXml
-        clone.dirtySourceRoots.removeAll(keepingCapacity: false)
+        copyDocumentState(to: clone)
         return copy(clone: clone, parent: parent, copyChildren: false, rebuildIndexes: false)
     }
 
     @inline(__always)
     public override func copy(clone: Node, parent: Node?) -> Node {
         let clone = clone as! Document
+        copyDocumentState(to: clone)
+        return super.copy(clone: clone, parent: parent)
+    }
+
+    private func copyDocumentState(to clone: Document) {
         clone._outputSettings = _outputSettings.copy() as! OutputSettings
         clone._quirksMode = _quirksMode
         clone.updateMetaCharset = updateMetaCharset
         clone.sourceBuffer = nil
         clone.parsedAsXml = parsedAsXml
         clone.dirtySourceRoots.removeAll(keepingCapacity: false)
-        return super.copy(clone: clone, parent: parent)
     }
 
 }

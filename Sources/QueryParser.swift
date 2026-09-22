@@ -22,9 +22,12 @@ public class QueryParser {
     nonisolated(unsafe)
     private static var cacheInstance: (any QueryParserCache)? = DefaultCache()
     
+    private static let maxRecursiveSelectorDepth = 64
+
     private var tq: TokenQueue
     private var query: String
     private var evals: Array<Evaluator>  = Array<Evaluator>()
+    private let recursiveDepth: Int
     
     
     // MARK: Initializer
@@ -33,9 +36,10 @@ public class QueryParser {
      Create a new QueryParser.
      - parameter query: CSS query
      */
-    private init(_ query: String) {
+    private init(_ query: String, recursiveDepth: Int) {
         self.query = query
         self.tq = TokenQueue(query)
+        self.recursiveDepth = recursiveDepth
     }
     
     
@@ -48,16 +52,51 @@ public class QueryParser {
      - seealso: ``cache``
      */
     public static func parse(_ query: String)throws->Evaluator {
+        return try parse(query, recursiveDepth: 0)
+    }
+
+    private static func parse(_ query: String, recursiveDepth: Int) throws -> Evaluator {
+        guard recursiveDepth <= maxRecursiveSelectorDepth else {
+            throw Exception.Error(type: .SelectorParseException,
+                                  Message: "Selector nesting exceeds the supported limit of \(maxRecursiveSelectorDepth)")
+        }
+
         let query = TokenQueue.trimCssQuery(query)
         let cache = Self.cache
-        if let cached = cache?.get(query) {
+        if let cached = cache?.get(query),
+           recursiveDepth + evaluatorGraphDepth(cached, stoppingAfter: maxRecursiveSelectorDepth) <= maxRecursiveSelectorDepth {
             return cached
         }
-        
-        let p = QueryParser(query)
+
+        let p = QueryParser(query, recursiveDepth: recursiveDepth)
         let eval = try p.parse()
+        guard recursiveDepth + evaluatorGraphDepth(eval, stoppingAfter: maxRecursiveSelectorDepth) <= maxRecursiveSelectorDepth else {
+            throw Exception.Error(type: .SelectorParseException,
+                                  Message: "Selector nesting exceeds the supported limit of \(maxRecursiveSelectorDepth)")
+        }
         cache?.set(query, eval)
         return eval
+    }
+
+    private static func evaluatorGraphDepth(_ evaluator: Evaluator, stoppingAfter limit: Int) -> Int {
+        var maximum = 0
+        var pending: [(Evaluator, Int)] = [(evaluator, 0)]
+        while let (current, depth) = pending.popLast() {
+            maximum = max(maximum, depth)
+            if maximum > limit { return maximum }
+            if let structural = current as? StructuralEvaluator {
+                pending.append((structural.evaluator, depth + 1))
+            } else if let combining = current as? CombiningEvaluator {
+                for child in combining.evaluators {
+                    pending.append((child, depth + 1))
+                }
+            }
+        }
+        return maximum
+    }
+
+    private func parseSubquery(_ query: String) throws -> Evaluator {
+        return try QueryParser.parse(query, recursiveDepth: recursiveDepth + 1)
     }
 
     /**
@@ -120,7 +159,7 @@ public class QueryParser {
 
         var rootEval: Evaluator? // the new topmost evaluator
         var currentEval: Evaluator? // the evaluator the new eval will be combined to. could be root, or rightmost or.
-        let newEval: Evaluator = try QueryParser.parse(subQuery) // the evaluator to add into target evaluator
+        let newEval: Evaluator = try parseSubquery(subQuery) // the evaluator to add into target evaluator
         var replaceRightMost: Bool = false
 
         if (evals.count == 1) {
@@ -351,7 +390,7 @@ public class QueryParser {
             try Validate.notEmpty(string: query, msg: ":has selector-list branch must not be empty")
             let leadingByte = query.utf8.first
             let followsSiblings = leadingByte == 0x2B || leadingByte == 0x7E // + or ~
-            return StructuralEvaluator.Has(try QueryParser.parse(query), followingSiblings: followsSiblings)
+            return StructuralEvaluator.Has(try parseSubquery(query), followingSiblings: followsSiblings)
         }
         evals.append(branches.count == 1 ? branches[0] : CombiningEvaluator.Or(branches))
     }
@@ -395,7 +434,7 @@ public class QueryParser {
         let subQuery: String = tq.chompBalanced("(", ")")
         try Validate.notEmpty(string: subQuery, msg: ":not(selector) subselect must not be empty")
 
-        evals.append(StructuralEvaluator.Not(try QueryParser.parse(subQuery)))
+        evals.append(StructuralEvaluator.Not(try parseSubquery(subQuery)))
     }
 
 }

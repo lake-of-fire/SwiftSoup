@@ -76,14 +76,32 @@ class HtmlTreeBuilder: TreeBuilder {
     }
 
     
-    override func parse(_ input: [UInt8], _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) throws -> Document {
-        _state = HtmlTreeBuilderState.Initial
+    private func resetParseState() {
+        _state = .Initial
+        _originalState = .Initial
         baseUriSetFromDoc = false
-        return try super.parse(input, baseUri, errors, settings)
+        headElement = nil
+        formElement = nil
+        contextElement = nil
+        formattingElements.removeAll(keepingCapacity: true)
+        pendingTableCharacters.removeAll(keepingCapacity: true)
+        emptyEnd.reset()
+        _framesetOk = true
+        fosterInserts = false
+        fragmentParsing = false
+        constructingFragment = false
+        currentToken = nil
     }
 
     override func initialiseParse(_ input: [UInt8], _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) {
+        resetParseState()
         super.initialiseParse(input, baseUri, errors, settings)
+        resetStackTracking()
+    }
+
+    override func initialiseParse(_ input: UnsafeBufferPointer<UInt8>, owner: AnyObject?, _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) {
+        resetParseState()
+        super.initialiseParse(input, owner: owner, baseUri, errors, settings)
         resetStackTracking()
     }
 
@@ -101,16 +119,19 @@ class HtmlTreeBuilder: TreeBuilder {
             }
             
             // initialise the tokeniser state:
-            if TagSets.titleTextarea.contains(context.tagNameUTF8()) || TagSets.frames.contains(context.tagNameUTF8()) {
+            let contextTagName = context.tagNameNormalUTF8()
+            if TagSets.titleTextarea.contains(contextTagName) {
                 tokeniser.transition(TokeniserState.Rcdata)
+            } else if TagSets.frames.contains(contextTagName) {
+                tokeniser.transition(TokeniserState.Rawtext)
             } else {
-                switch context.tagNameUTF8() {
+                switch contextTagName {
                 case UTF8Arrays.script:
                     tokeniser.transition(TokeniserState.ScriptData)
                 case UTF8Arrays.noscript:
                     tokeniser.transition(TokeniserState.Data) // if scripting enabled, rawtext
                 case UTF8Arrays.plaintext:
-                    tokeniser.transition(TokeniserState.Data)
+                    tokeniser.transition(TokeniserState.PLAINTEXT)
                 default:
                     tokeniser.transition(TokeniserState.Data)
                 }
