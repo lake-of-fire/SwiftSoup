@@ -2629,7 +2629,7 @@ open class Element: Node {
      */
     @inline(__always)
     public func val() throws -> String {
-        if (tagName() == "textarea") {
+        if _tag.tagId == .textarea {
             return try text()
         } else {
             return try attr("value")
@@ -2644,7 +2644,7 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     public func val(_ value: String) throws -> Element {
-        if (tagName() == "textarea") {
+        if _tag.tagId == .textarea {
             try text(value)
         } else {
             try attr("value", value)
