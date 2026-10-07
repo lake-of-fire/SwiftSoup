@@ -2666,6 +2666,32 @@ open class Element: Node {
         try attributes?.put(Element.classString, StringUtil.join(classNames, sep: " ").utf8Array)
         return self
     }
+
+    // Class tokens are code-unit identities. Swift String equality treats
+    // canonically equivalent Unicode spellings as equal, so mutating through
+    // OrderedSet<String> can silently collapse two distinct author classes.
+    // Keep public classNames() compatibility, but preserve exact existing bytes
+    // for DOM-style add/remove/toggle operations.
+    @discardableResult
+    private func setClassNamesUTF8(_ classNames: OrderedSet<[UInt8]>) throws -> Element {
+        _ = ensureAttributes()
+        var joined = [UInt8]()
+        if !classNames.isEmpty {
+            var byteCount = classNames.count - 1
+            for className in classNames {
+                byteCount += className.count
+            }
+            joined.reserveCapacity(byteCount)
+        }
+        for (index, className) in classNames.enumerated() {
+            if index > 0 {
+                joined.append(UInt8(ascii: " "))
+            }
+            joined.append(contentsOf: className)
+        }
+        try attributes?.put(Element.classString, joined)
+        return self
+    }
     
     /**
      Tests if this element has a class. Case insensitive.
@@ -2767,9 +2793,9 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     public func addClass(_ className: String) throws -> Element {
-        let classes: OrderedSet<String> = try classNames()
-        classes.append(className)
-        try classNames(classes)
+        let classes = try classNamesUTF8()
+        classes.append(className.utf8Array)
+        try setClassNamesUTF8(classes)
         return self
     }
     
@@ -2781,9 +2807,9 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     public func removeClass(_ className: String) throws -> Element {
-        let classes: OrderedSet<String> = try classNames()
-        classes.remove(className)
-        try classNames(classes)
+        let classes = try classNamesUTF8()
+        classes.remove(className.utf8Array)
+        try setClassNamesUTF8(classes)
         return self
     }
     
@@ -2795,12 +2821,14 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     public func toggleClass(_ className: String) throws -> Element {
-        let classes: OrderedSet<String> = try classNames()
-        if (classes.contains(className)) {classes.remove(className)
+        let classNameBytes = className.utf8Array
+        let classes = try classNamesUTF8()
+        if classes.contains(classNameBytes) {
+            classes.remove(classNameBytes)
         } else {
-            classes.append(className)
+            classes.append(classNameBytes)
         }
-        try classNames(classes)
+        try setClassNamesUTF8(classes)
         
         return self
     }
