@@ -493,7 +493,33 @@ open class Node: Equatable, Hashable {
         if let document = self as? Document {
             return document
         }
-        return parentNode?.ownerDocument()
+
+        // Walk built-in parent links iteratively so ordinary deep DOMs do not
+        // consume one call frame per ancestor. Preserve the historical virtual
+        // dispatch contract at custom subclass boundaries.
+        var node = parentNode
+        while let current = node {
+            if let document = current as? Document {
+                // A Document subclass may override ownerDocument() to project a
+                // logical owner; preserve that virtual-dispatch contract.
+                return document.ownerDocument()
+            }
+            let currentType = type(of: current)
+            let isBuiltIn =
+                currentType == Node.self ||
+                currentType == Element.self ||
+                currentType == FormElement.self ||
+                currentType == TextNode.self ||
+                currentType == DataNode.self ||
+                currentType == Comment.self ||
+                currentType == DocumentType.self ||
+                currentType == XmlDeclaration.self
+            if !isBuiltIn {
+                return current.ownerDocument()
+            }
+            node = current.parentNode
+        }
+        return nil
     }
 
     /// Internal stack-safe owner lookup for source tracking and source reuse.
