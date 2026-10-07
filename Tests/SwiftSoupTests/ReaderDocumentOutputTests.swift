@@ -25,6 +25,31 @@ private final class NilNextSiblingElement: Element {
     }
 }
 
+private final class CallbackSerializationNode: Node {
+    let label: String
+    var onHead: ((CallbackSerializationNode, Int) throws -> Void)?
+    var onTail: ((CallbackSerializationNode, Int) throws -> Void)?
+
+    init(_ label: String) {
+        self.label = label
+        super.init()
+    }
+
+    override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {
+        accum.append("H(\(label),\(depth));")
+        try onHead?(self, depth)
+    }
+
+    override func outerHtmlTail(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {
+        accum.append("T(\(label),\(depth));")
+        try onTail?(self, depth)
+    }
+}
+
+private enum SerializationCallbackFailure: Error {
+    case stopped
+}
+
 /// Reader regressions reconciled onto upstream without replacing its newer
 /// attribute-ownership or deep-clone implementation.
 final class ReaderDocumentOutputTests: XCTestCase {
@@ -76,6 +101,73 @@ final class ReaderDocumentOutputTests: XCTestCase {
         let html = String(decoding: try document.outerHtmlUTF8WithoutSourceReuse(), as: UTF8.self)
         let reparsed = try SwiftSoup.parse(html)
         XCTAssertEqual(try reparsed.select("span").array().map { try $0.text() }, ["first", "second"])
+    }
+
+    func testSerializerPreservesVirtualCallbacksAndChildSnapshots() throws {
+        for allowRawSource in [true, false] {
+            let root = CallbackSerializationNode("root")
+            let first = CallbackSerializationNode("first")
+            let second = CallbackSerializationNode("second")
+            let headAdded = CallbackSerializationNode("head-added")
+            let lateAdded = CallbackSerializationNode("late-added")
+            let tailAdded = CallbackSerializationNode("tail-added")
+            try root.addChildren(first, second)
+            root.onHead = { node, _ in try node.addChildren(headAdded) }
+            first.onHead = { node, _ in
+                try second.remove()
+                try XCTUnwrap(node.parentNode).addChildren(lateAdded)
+            }
+            root.onTail = { node, _ in try node.addChildren(tailAdded) }
+
+            let accum = StringBuilder()
+            let out = OutputSettings().prettyPrint(pretty: false)
+            if allowRawSource {
+                try root.outerHtmlFast(accum, 5, out, allowRawSource: true)
+            } else {
+                try root.outerHtmlFastWithoutSourceReuse(accum, 5, out)
+            }
+            XCTAssertEqual(accum.toString(),
+                "H(root,5);H(first,6);T(first,6);H(second,6);T(second,6);" +
+                "H(head-added,6);T(head-added,6);T(root,5);")
+            XCTAssertNil(second.parentNode)
+            XCTAssertEqual(root.getChildNodes().count, 4)
+            XCTAssertTrue(root.childNode(0) === first)
+            XCTAssertTrue(root.childNode(1) === headAdded)
+            XCTAssertTrue(root.childNode(2) === lateAdded)
+            XCTAssertTrue(root.childNode(3) === tailAdded)
+        }
+    }
+
+    func testSerializerPropagatesCallbackErrorsWithoutRemainingCallbacks() throws {
+        for allowRawSource in [true, false] {
+            for throwsInHead in [true, false] {
+                let root = CallbackSerializationNode("root")
+                let first = CallbackSerializationNode("first")
+                let second = CallbackSerializationNode("second")
+                try root.addChildren(first, second)
+                if throwsInHead {
+                    first.onHead = { _, _ in throw SerializationCallbackFailure.stopped }
+                } else {
+                    first.onTail = { _, _ in throw SerializationCallbackFailure.stopped }
+                }
+                let accum = StringBuilder()
+                let out = OutputSettings().prettyPrint(pretty: false)
+                XCTAssertThrowsError(try {
+                    if allowRawSource {
+                        try root.outerHtmlFast(accum, 0, out, allowRawSource: true)
+                    } else {
+                        try root.outerHtmlFastWithoutSourceReuse(accum, 0, out)
+                    }
+                }()) { error in
+                    guard case SerializationCallbackFailure.stopped = error else {
+                        return XCTFail("Unexpected serialization error: \(error)")
+                    }
+                }
+                XCTAssertEqual(accum.toString(), throwsInHead
+                    ? "H(root,0);H(first,1);"
+                    : "H(root,0);H(first,1);T(first,1);")
+            }
+        }
     }
 
     func testDeepSerializationPreservesCleanAndMutatedTreesOnSmallStack() {
