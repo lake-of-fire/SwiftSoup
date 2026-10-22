@@ -206,3 +206,55 @@ final class ReaderDocumentOutputTests: XCTestCase {
         XCTAssertEqual(done.wait(timeout: .now() + 60), .success)
     }
 }
+
+
+extension ReaderDocumentOutputTests {
+    func testMissingDoctypeEstablishesQuirksMode() throws {
+        for prefix in ["", " \n", "<!-- before root -->"] {
+            let document = try SwiftSoup.parse(prefix + "<html><body><p>Reader</p></body></html>")
+            XCTAssertTrue(document.quirksMode() == .quirks)
+        }
+    }
+
+    func testLegacyDoctypeModesFollowPublicAndSystemIdentifiers() throws {
+        let cases: [(String, Document.QuirksMode)] = [
+            ("<!doctype html>", .noQuirks),
+            ("<!DOCTYPE html SYSTEM 'about:legacy-compat'>", .noQuirks),
+            ("<!DOCTYPE html PUBLIC '-//W3C//DTD HTML 4.01 Transitional//EN'>", .quirks),
+            ("<!DOCTYPE html PUBLIC '-//W3C//DTD HTML 4.01 Transitional//EN' 'http://www.w3.org/TR/html4/loose.dtd'>", .limitedQuirks),
+            ("<!DOCTYPE html PUBLIC '-//W3C//DTD HTML 4.01 Frameset//EN' 'frameset.dtd'>", .limitedQuirks),
+            ("<!DOCTYPE html PUBLIC '-//W3C//DTD XHTML 1.0 Transitional//EN'>", .limitedQuirks),
+            ("<!DOCTYPE html PUBLIC '-//IETF//DTD HTML 2.0//EN'>", .quirks),
+            ("<!DOCTYPE html PUBLIC 'HTML'>", .quirks),
+            ("<!DOCTYPE html SYSTEM 'HTTP://WWW.IBM.COM/DATA/DTD/V11/IBMXHTML1-TRANSITIONAL.DTD'>", .quirks),
+            ("<!DOCTYPE other>", .quirks),
+            ("<!DOCTYPE html PUBLIC>", .quirks),
+        ]
+        for (doctype, expected) in cases {
+            let document = try SwiftSoup.parse(doctype + "<p>Reader</p>")
+            XCTAssertTrue(document.quirksMode() == expected, doctype)
+        }
+    }
+
+    func testEmptySystemIdentifierIsPresentForDocumentMode() throws {
+        for identifier in ["''", "\"\"", "' '", "\" \""] {
+            let html = "<!DOCTYPE html PUBLIC '-//W3C//DTD HTML 4.01 Transitional//EN' " + identifier + "><p>Reader</p>"
+            XCTAssertTrue(try SwiftSoup.parse(html).quirksMode() == .limitedQuirks, html)
+        }
+    }
+
+    func testPublicIdentifierModeMatchingFoldsOnlyASCIICase() throws {
+        let html = "<!DOCTYPE HTML PUBLIC '-//w3c//dtd xHtMl 1.0 transitional//EN'><p>Reader</p>"
+        XCTAssertTrue(try SwiftSoup.parse(html).quirksMode() == .limitedQuirks)
+        let unicodeDecoy = "<!DOCTYPE html PUBLIC '-//W3C//DTD XHTMK 1.0 Transitional//EN'><p>Reader</p>"
+        XCTAssertTrue(try SwiftSoup.parse(unicodeDecoy).quirksMode() == .noQuirks)
+    }
+
+    func testTableStartRespectsQuirksParagraphBoundary() throws {
+        let content = "<p id='paragraph'>before<table id='table'><tr><td>cell</td></tr></table>after"
+        let quirks = try SwiftSoup.parse(content)
+        XCTAssertEqual(try quirks.getElementById("table")?.parent()?.id(), "paragraph")
+        let standards = try SwiftSoup.parse("<!doctype html>" + content)
+        XCTAssertEqual(try standards.getElementById("table")?.parent()?.tagName(), "body")
+    }
+}

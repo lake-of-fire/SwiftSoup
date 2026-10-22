@@ -1809,9 +1809,11 @@ enum TokeniserState: TokeniserStateProtocol {
                     t.transition(.Data)
                 case TokeniserStateVars.quoteByte: // "\""
                     t.error(self)
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_doubleQuoted)
                 case TokeniserStateVars.apostropheByte: // "'"
                     t.error(self)
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_singleQuoted)
                 default:
                     t.error(self)
@@ -1831,11 +1833,13 @@ enum TokeniserState: TokeniserStateProtocol {
                 case "\"":
                     t.error(self)
                     // system id empty
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_doubleQuoted)
                     break
                 case "'":
                     t.error(self)
                     // system id empty
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_singleQuoted)
                     break
                 case TokeniserStateVars.eof:
@@ -1869,9 +1873,11 @@ enum TokeniserState: TokeniserStateProtocol {
                     t.transition(.Data)
                 case TokeniserStateVars.quoteByte: // "\""
                     t.error(self)
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_doubleQuoted)
                 case TokeniserStateVars.apostropheByte: // "'"
                     t.error(self)
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_singleQuoted)
                 default:
                     t.error(self)
@@ -1890,11 +1896,13 @@ enum TokeniserState: TokeniserStateProtocol {
                 case "\"":
                     t.error(self)
                     // system id empty
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_doubleQuoted)
                     break
                 case "'":
                     t.error(self)
                     // system id empty
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_singleQuoted)
                     break
                 case TokeniserStateVars.eof:
@@ -1930,9 +1938,11 @@ enum TokeniserState: TokeniserStateProtocol {
                     t.transition(.Data)
                 case TokeniserStateVars.quoteByte: // "\""
                     t.error(self)
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_doubleQuoted)
                 case TokeniserStateVars.apostropheByte: // "'"
                     t.error(self)
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_singleQuoted)
                 default:
                     t.error(self)
@@ -1954,11 +1964,13 @@ enum TokeniserState: TokeniserStateProtocol {
                 case "\"":
                     t.error(self)
                     // system id empty
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_doubleQuoted)
                     break
                 case "'":
                     t.error(self)
                     // system id empty
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_singleQuoted)
                     break
                 case TokeniserStateVars.eof:
@@ -1988,8 +2000,10 @@ enum TokeniserState: TokeniserStateProtocol {
                 case TokeniserStateVars.tabByte, TokeniserStateVars.newLineByte, TokeniserStateVars.carriageReturnByte, TokeniserStateVars.formFeedByte, TokeniserStateVars.spaceByte:
                     break
                 case TokeniserStateVars.quoteByte: // "\""
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_doubleQuoted)
                 case TokeniserStateVars.apostropheByte: // "'"
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_singleQuoted)
                 case TokeniserStateVars.greaterThanByte: // ">"
                     t.error(self)
@@ -2008,10 +2022,12 @@ enum TokeniserState: TokeniserStateProtocol {
                     break
                 case "\"":
                     // set system id to empty string
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_doubleQuoted)
                     break
                 case "'":
                     // set public id to empty string
+                    t.doctypePending.hasSystemIdentifier = true
                     t.transition(.DoctypeSystemIdentifier_singleQuoted)
                     break
                 case ">":

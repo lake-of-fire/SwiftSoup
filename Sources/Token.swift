@@ -46,6 +46,7 @@ open class Token {
         let publicIdentifier: StringBuilder = StringBuilder()
         let systemIdentifier: StringBuilder = StringBuilder()
         var forceQuirks: Bool  = false
+        var hasSystemIdentifier = false
         
         override init() {
             super.init()
@@ -60,6 +61,7 @@ open class Token {
             Token.reset(publicIdentifier)
             Token.reset(systemIdentifier)
             forceQuirks = false
+            hasSystemIdentifier = false
             return self
         }
         

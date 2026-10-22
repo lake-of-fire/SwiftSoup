@@ -75,6 +75,90 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
         return self.hashValue == s.hashValue
     }
 
+    // HTML parsing, "the initial insertion mode": document mode controls
+    // browser selector behavior and the table-start paragraph boundary.
+    private static let quirksPublicIdentifierPrefixes = [
+        "+//silmaril//dtd html pro v0r11 19970101//",
+        "-//advasoft ltd//dtd html 3.0 aswedit + extensions//",
+        "-//as//dtd html 3.0 aswedit + extensions//",
+        "-//ietf//dtd html 2.0 level 1//",
+        "-//ietf//dtd html 2.0 level 2//",
+        "-//ietf//dtd html 2.0 strict level 1//",
+        "-//ietf//dtd html 2.0 strict level 2//",
+        "-//ietf//dtd html 2.0 strict//",
+        "-//ietf//dtd html 2.0//",
+        "-//ietf//dtd html 2.1e//",
+        "-//ietf//dtd html 3.0//",
+        "-//ietf//dtd html 3.2 final//",
+        "-//ietf//dtd html 3.2//",
+        "-//ietf//dtd html 3//",
+        "-//ietf//dtd html level 0//",
+        "-//ietf//dtd html level 1//",
+        "-//ietf//dtd html level 2//",
+        "-//ietf//dtd html level 3//",
+        "-//ietf//dtd html strict level 0//",
+        "-//ietf//dtd html strict level 1//",
+        "-//ietf//dtd html strict level 2//",
+        "-//ietf//dtd html strict level 3//",
+        "-//ietf//dtd html strict//",
+        "-//ietf//dtd html//",
+        "-//metrius//dtd metrius presentational//",
+        "-//microsoft//dtd internet explorer 2.0 html strict//",
+        "-//microsoft//dtd internet explorer 2.0 html//",
+        "-//microsoft//dtd internet explorer 2.0 tables//",
+        "-//microsoft//dtd internet explorer 3.0 html strict//",
+        "-//microsoft//dtd internet explorer 3.0 html//",
+        "-//microsoft//dtd internet explorer 3.0 tables//",
+        "-//netscape comm. corp.//dtd html//",
+        "-//netscape comm. corp.//dtd strict html//",
+        "-//o'reilly and associates//dtd html 2.0//",
+        "-//o'reilly and associates//dtd html extended 1.0//",
+        "-//o'reilly and associates//dtd html extended relaxed 1.0//",
+        "-//softquad software//dtd hotmetal pro 6.0::19990601::extensions to html 4.0//",
+        "-//softquad//dtd hotmetal pro 4.0::19971010::extensions to html 4.0//",
+        "-//spyglass//dtd html 2.0 extended//",
+        "-//sq//dtd html 2.0 hotmetal + extensions//",
+        "-//sun microsystems corp.//dtd hotjava html//",
+        "-//sun microsystems corp.//dtd hotjava strict html//",
+        "-//w3c//dtd html 3 1995-03-24//",
+        "-//w3c//dtd html 3.2 draft//",
+        "-//w3c//dtd html 3.2 final//",
+        "-//w3c//dtd html 3.2//",
+        "-//w3c//dtd html 3.2s draft//",
+        "-//w3c//dtd html 4.0 frameset//",
+        "-//w3c//dtd html 4.0 transitional//",
+        "-//w3c//dtd html experimental 19960712//",
+        "-//w3c//dtd html experimental 970421//",
+        "-//w3c//dtd w3 html//",
+        "-//w3o//dtd w3 html 3.0//",
+        "-//webtechs//dtd mozilla html 2.0//",
+        "-//webtechs//dtd mozilla html//",
+    ]
+
+    private static func documentMode(_ token: Token.Doctype) -> Document.QuirksMode {
+        func asciiLower(_ bytes: [UInt8]) -> String {
+            String(decoding: bytes.map { (65...90).contains($0) ? $0 + 32 : $0 }, as: UTF8.self)
+        }
+        let name = asciiLower(token.getName())
+        let publicID = asciiLower(token.getPublicIdentifier())
+        let systemID = asciiLower(token.getSystemIdentifier())
+        let html4 = publicID.hasPrefix("-//w3c//dtd html 4.01 frameset//")
+            || publicID.hasPrefix("-//w3c//dtd html 4.01 transitional//")
+        if token.isForceQuirks() || name != "html"
+            || quirksPublicIdentifierPrefixes.contains(where: { publicID.hasPrefix($0) })
+            || ["-//w3o//dtd w3 html strict 3.0//en//", "-/w3c/dtd html 4.0 transitional/en", "html"].contains(publicID)
+            || (html4 && !token.hasSystemIdentifier)
+            || systemID == "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd" {
+            return .quirks
+        }
+        if publicID.hasPrefix("-//w3c//dtd xhtml 1.0 frameset//")
+            || publicID.hasPrefix("-//w3c//dtd xhtml 1.0 transitional//")
+            || (html4 && token.hasSystemIdentifier) {
+            return .limitedQuirks
+        }
+        return .noQuirks
+    }
+
     func process(_ t: Token, _ tb: HtmlTreeBuilder) throws -> Bool {
         switch self {
         case .Initial:
@@ -83,9 +167,8 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
             } else if (t.isComment()) {
                 try tb.insert(t.asComment())
             } else if (t.isDoctype()) {
-                // todo: parse error check on expected doctypes
-                // todo: quirk state check on doctype ids
                 let d: Token.Doctype = t.asDoctype()
+                let mode = Self.documentMode(d)
                 let doctype: DocumentType = DocumentType(
                     nameSlice: tb.settings.normalizeTag(d.takeNameSlice()),
                     pubSysKeySlice: d.getPubSysKeySlice(),
@@ -98,12 +181,11 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
                     doctype.setSourceRange(range, complete: true)
                 }
                 try tb.getDocument().appendChild(doctype)
-                if (d.isForceQuirks()) {
-                    tb.getDocument().quirksMode(Document.QuirksMode.quirks)
-                }
+                tb.getDocument().quirksMode(mode)
                 tb.transition(.BeforeHtml)
             } else {
-                // todo: check not iframe srcdoc
+                // Fragment parsing inherits its context mode and skips Initial.
+                tb.getDocument().quirksMode(.quirks)
                 tb.transition(.BeforeHtml)
                 return try tb.process(t) // re-process token
             }
@@ -673,7 +755,9 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
                         try tb.insert(startTag)
                     }
                 case .table:
-                    try closePIfInButtonScope()
+                    if tb.getDocument().quirksMode() != .quirks {
+                        try closePIfInButtonScope()
+                    }
                     try tb.insert(startTag)
                     tb.framesetOk(false)
                     tb.transition(.InTable)
