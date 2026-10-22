@@ -77,36 +77,28 @@ class HtmlTreeBuilder: TreeBuilder {
     }
 
     
-    override func parse(_ input: [UInt8], _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) throws -> Document {
-        _state = HtmlTreeBuilderState.Initial
-        baseUriSetFromDoc = false
-        return try super.parse(input, baseUri, errors, settings)
-    }
-
-    override func initialiseParse(_ input: [UInt8], _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) {
-        super.initialiseParse(input, baseUri, errors, settings)
-        resetStackTracking()
-        resetTemplateState()
-    }
-
-    public override func initialiseParse(_ input: UnsafeBufferPointer<UInt8>, owner: AnyObject?, _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) {
-        super.initialiseParse(input, owner: owner, baseUri, errors, settings)
-        resetStackTracking()
-        resetTemplateState()
-    }
-
-    private func resetTemplateState() {
+    private func resetParseState() {
         templateModes.removeAll(keepingCapacity: true)
-        formattingElements.removeAll(keepingCapacity: true)
-        pendingTableCharacters.removeAll(keepingCapacity: true)
+        _state = .Initial
+        _originalState = .Initial
+        baseUriSetFromDoc = false
         headElement = nil
         formElement = nil
         contextElement = nil
-        fragmentParsing = false
-        fosterInserts = false
+        formattingElements.removeAll(keepingCapacity: true)
+        pendingTableCharacters.removeAll(keepingCapacity: true)
+        emptyEnd.reset()
         _framesetOk = true
-        _state = .Initial
-        baseUriSetFromDoc = false
+        fosterInserts = false
+        fragmentParsing = false
+        constructingFragment = false
+        currentToken = nil
+    }
+
+    override func initialiseParse(_ input: [UInt8], _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) {
+        resetParseState()
+        super.initialiseParse(input, baseUri, errors, settings)
+        resetStackTracking()
     }
 
     func adjustedCurrentElement() -> Element? {
@@ -116,6 +108,12 @@ class HtmlTreeBuilder: TreeBuilder {
 
     override func prepareTokeniserForRead() {
         tokeniser.allowsCdata = (adjustedCurrentElement()?.namespace() ?? .html) != .html
+    }
+
+    override func initialiseParse(_ input: UnsafeBufferPointer<UInt8>, owner: AnyObject?, _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) {
+        resetParseState()
+        super.initialiseParse(input, owner: owner, baseUri, errors, settings)
+        resetStackTracking()
     }
 
     func parseFragment(_ inputFragment: [UInt8], _ context: Element?, _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) throws -> Array<Node> {
@@ -132,18 +130,21 @@ class HtmlTreeBuilder: TreeBuilder {
             }
             
             // initialise the tokeniser state:
+            let contextTagName = context.tagNameNormalUTF8()
             if context.namespace() != .html {
                 tokeniser.transition(TokeniserState.Data)
-            } else if TagSets.titleTextarea.contains(context.tagNameUTF8()) || TagSets.frames.contains(context.tagNameUTF8()) {
+            } else if TagSets.titleTextarea.contains(contextTagName) {
                 tokeniser.transition(TokeniserState.Rcdata)
+            } else if TagSets.frames.contains(contextTagName) {
+                tokeniser.transition(TokeniserState.Rawtext)
             } else {
-                switch context.tagNameUTF8() {
+                switch contextTagName {
                 case UTF8Arrays.script:
                     tokeniser.transition(TokeniserState.ScriptData)
                 case UTF8Arrays.noscript:
                     tokeniser.transition(TokeniserState.Data) // if scripting enabled, rawtext
                 case UTF8Arrays.plaintext:
-                    tokeniser.transition(TokeniserState.Data)
+                    tokeniser.transition(TokeniserState.PLAINTEXT)
                 default:
                     tokeniser.transition(TokeniserState.Data)
                 }

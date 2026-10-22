@@ -32,10 +32,23 @@ final class Tokeniser {
     private static let regCodepoints: [UnicodeScalar] = [UnicodeScalar(TokeniserStateVars.regCodepoint)!]
     private static let tradeCodepoints: [UnicodeScalar] = [UnicodeScalar(TokeniserStateVars.tradeCodepoint)!]
     private static let replacementCodepoints: [UnicodeScalar] = [Tokeniser.replacementChar]
-    private static let numericCharRefCache: [[UnicodeScalar]] = {
-        var cache = Array(repeating: [UnicodeScalar](), count: 256)
-        for i in 0..<256 {
-            cache[i] = [UnicodeScalar(i)!]
+    private static let literalNumericCharRefCache: [[UnicodeScalar]] = {
+        return (0..<256).map { [UnicodeScalar($0)!] }
+    }()
+    private static let htmlNumericCharRefCache: [[UnicodeScalar]] = {
+        var cache = literalNumericCharRefCache
+        // Cache the HTML numeric-reference result, not the input scalar. This
+        // keeps short decimal and general decimal/hex paths consistent without
+        // adding per-reference normalization work to the hot path.
+        cache[0] = [Tokeniser.replacementChar]
+        let c1Replacements: [UInt32] = [
+            0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+            0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+            0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+            0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178
+        ]
+        for (offset, scalar) in c1Replacements.enumerated() {
+            cache[0x80 + offset] = [UnicodeScalar(scalar)!]
         }
         return cache
     }()
@@ -150,6 +163,9 @@ final class Tokeniser {
     }
 
     
+    // Choose the numeric-reference policy once per tokenizer, not per scalar.
+    // Case-preserving HTML still uses HTML mappings; XML keeps literal values.
+    private let numericCharRefCache: [[UnicodeScalar]]
     private let reader: CharacterReader // html input
     private let errors: ParseErrorList? // errors found while tokenising
     
@@ -182,6 +198,7 @@ final class Tokeniser {
     let lowercaseTagNames: Bool
     private let trackSourceRanges: Bool
     private let trackErrors: Bool
+    private let isXmlParser: Bool
     let trackAttributes: Bool
 
     @inline(__always)
@@ -189,7 +206,10 @@ final class Tokeniser {
         return trackSourceRanges
     }
     
-    init(_ reader: CharacterReader, _ errors: ParseErrorList?, _ settings: ParseSettings? = nil) {
+    init(_ reader: CharacterReader, _ errors: ParseErrorList?, _ settings: ParseSettings? = nil,
+         isXmlParser: Bool = false, normalizesHtmlNumericReferences: Bool = true) {
+        self.isXmlParser = isXmlParser
+        numericCharRefCache = normalizesHtmlNumericReferences ? Self.htmlNumericCharRefCache : Self.literalNumericCharRefCache
         self.reader = reader
         self.errors = errors
         trackErrors = errors?.getMaxSize() ?? 0 > 0
@@ -205,6 +225,25 @@ final class Tokeniser {
             lowercaseTagNames = false
             trackSourceRanges = true
             trackAttributes = true
+        }
+    }
+
+    @inline(__always)
+    func matchesTagStart(_ byte: UInt8) -> Bool {
+        if TokeniserStateVars.isAsciiAlpha(byte) { return true }
+        guard isXmlParser else { return false }
+        if byte < TokeniserStateVars.asciiUpperLimitByte {
+            return byte == TokeniserStateVars.colonByte || byte == TokeniserStateVars.underscoreByte
+        }
+        // XML 1.0 (Fifth Edition), production [4] NameStartChar. The reader's
+        // EOF/error sentinel U+FFFF is outside these ranges.
+        switch reader.current().value {
+        case 0xC0...0xD6, 0xD8...0xF6, 0xF8...0x2FF, 0x370...0x37D,
+             0x37F...0x1FFF, 0x200C...0x200D, 0x2070...0x218F, 0x2C00...0x2FEF,
+             0x3001...0xD7FF, 0xF900...0xFDCF, 0xFDF0...0xFFFD, 0x10000...0xEFFFF:
+            return true
+        default:
+            return false
         }
     }
 
@@ -424,7 +463,7 @@ final class Tokeniser {
                 return
             }
             let next = reader.input[reader.pos]
-            if next < TokeniserStateVars.asciiUpperLimitByte, TokeniserStateVars.isAsciiAlpha(next) {
+            if matchesTagStart(next) {
                 if try TokeniserState.readTagNameFromTagOpen(self, reader, true) {
                     return
                 }
@@ -443,26 +482,13 @@ final class Tokeniser {
                     return
                 }
                 let endByte = reader.currentByte()!
-                if endByte < TokeniserStateVars.asciiUpperLimitByte {
-                    if TokeniserStateVars.isAsciiAlpha(endByte) {
-                        if try TokeniserState.readTagNameFromTagOpen(self, reader, false) {
-                            return
-                        }
-                        return
-                    }
-                    if endByte == TokeniserStateVars.greaterThanByte {
-                        error(.Data)
-                        clearTagStart()
-                        advanceTransition(.Data)
-                    } else {
-                        error(.Data)
-                        clearTagStart()
-                        advanceTransition(.BogusComment)
-                    }
-                } else if reader.matchesLetter() {
-                    createTagPending(false)
-                    try TokeniserState.readTagName(.TagName, self, reader)
+                if matchesTagStart(endByte) {
+                    _ = try TokeniserState.readTagNameFromTagOpen(self, reader, false)
                     return
+                } else if endByte == TokeniserStateVars.greaterThanByte {
+                    error(.Data)
+                    clearTagStart()
+                    advanceTransition(.Data)
                 } else {
                     error(.Data)
                     clearTagStart()
@@ -471,11 +497,6 @@ final class Tokeniser {
             case TokeniserStateVars.questionMarkByte: // "?"
                 advanceTransitionAscii(.BogusComment)
             default:
-                if next >= TokeniserStateVars.asciiUpperLimitByte, reader.matchesLetter() {
-                    createTagPending(true)
-                    try TokeniserState.readTagName(.TagName, self, reader)
-                    return
-                }
                 error(.Data)
                 emit(UnicodeScalar.LessThan)
                 transition(.Data)
@@ -531,7 +552,7 @@ final class Tokeniser {
                 return
             }
             let next = reader.input[reader.pos]
-            if next < TokeniserStateVars.asciiUpperLimitByte, TokeniserStateVars.isAsciiAlpha(next) {
+            if matchesTagStart(next) {
                 if try TokeniserState.readTagNameFromTagOpen(self, reader, true) {
                     return
                 }
@@ -549,24 +570,12 @@ final class Tokeniser {
                     return
                 }
                 let endByte = reader.currentByte()!
-                if endByte < TokeniserStateVars.asciiUpperLimitByte {
-                    if TokeniserStateVars.isAsciiAlpha(endByte) {
-                        if try TokeniserState.readTagNameFromTagOpen(self, reader, false) {
-                            return
-                        }
-                        return
-                    }
-                    if endByte == TokeniserStateVars.greaterThanByte {
-                        error(.Data)
-                        advanceTransition(.Data)
-                    } else {
-                        error(.Data)
-                        advanceTransition(.BogusComment)
-                    }
-                } else if reader.matchesLetter() {
-                    createTagPending(false)
-                    try TokeniserState.readTagName(.TagName, self, reader)
+                if matchesTagStart(endByte) {
+                    _ = try TokeniserState.readTagNameFromTagOpen(self, reader, false)
                     return
+                } else if endByte == TokeniserStateVars.greaterThanByte {
+                    error(.Data)
+                    advanceTransition(.Data)
                 } else {
                     error(.Data)
                     advanceTransition(.BogusComment)
@@ -574,11 +583,6 @@ final class Tokeniser {
             case TokeniserStateVars.questionMarkByte: // "?"
                 advanceTransitionAscii(.BogusComment)
             default:
-                if next >= TokeniserStateVars.asciiUpperLimitByte, reader.matchesLetter() {
-                    createTagPending(true)
-                    try TokeniserState.readTagName(.TagName, self, reader)
-                    return
-                }
                 error(.Data)
                 emit(UnicodeScalar.LessThan)
                 transition(.Data)
@@ -837,7 +841,7 @@ final class Tokeniser {
                                         let value = Int(d1 - TokeniserStateVars.zeroByte) * 10 + Int(d2 - TokeniserStateVars.zeroByte)
                                         reader.pos = i + 2
                                         reader.advanceAscii()
-                                        return Self.numericCharRefCache[value]
+                                        return numericCharRefCache[value]
                                     }
                                     if d3 >= TokeniserStateVars.zeroByte && d3 <= TokeniserStateVars.nineByte, i + 3 <= maxIndex,
                                        reader.input[i + 3] == TokeniserStateVars.semicolonByte {
@@ -847,7 +851,7 @@ final class Tokeniser {
                                         reader.pos = i + 3
                                         reader.advanceAscii()
                                         if value < 256 {
-                                            return Self.numericCharRefCache[value]
+                                            return numericCharRefCache[value]
                                         }
                                         return [UnicodeScalar(value)!]
                                     }
@@ -856,7 +860,7 @@ final class Tokeniser {
                                 let value = Int(d1 - TokeniserStateVars.zeroByte)
                                 reader.pos = i + 1
                                 reader.advanceAscii()
-                                return Self.numericCharRefCache[value]
+                                return numericCharRefCache[value]
                             }
                         }
                     }
@@ -907,7 +911,7 @@ final class Tokeniser {
                 return Self.replacementCodepoints
             }
             if charval >= 0, charval < 256 {
-                return Self.numericCharRefCache[charval]
+                return numericCharRefCache[charval]
             }
             return [UnicodeScalar(charval)!]
         }
@@ -916,7 +920,7 @@ final class Tokeniser {
         reader.markPos()
         do {
             @inline(__always)
-            func fastNamedEntity(_ name: [UInt8], _ codepoints: [UnicodeScalar]) -> [UnicodeScalar]? {
+            func fastNamedEntity(_ name: [UInt8], _ codepoints: [UnicodeScalar], requiresSemicolon: Bool = false) -> [UnicodeScalar]? {
                 let pos = reader.pos
                 let end = reader.end
                 let input = reader.input
@@ -926,6 +930,11 @@ final class Tokeniser {
                     if input[pos + i] != name[i] { return nil }
                 }
                 let nextIndex = pos + count
+                // Unlike the legacy amp/lt/gt/quot names, apos is only defined
+                // with a terminator. Reject before changing the reader cursor.
+                if requiresSemicolon && (nextIndex == end || input[nextIndex] != TokeniserStateVars.semicolonByte) {
+                    return nil
+                }
                 if nextIndex < end {
                     let nb = input[nextIndex]
                     if nb >= TokeniserStateVars.asciiUpperLimitByte { return nil } // let slow path handle unicode letters/digits
@@ -949,7 +958,7 @@ final class Tokeniser {
                 switch b {
                 case TokeniserStateVars.lowerAByte: // a
                     if let fast = fastNamedEntity(Self.ampName, Self.ampCodepoints) { return fast }
-                    if let fast = fastNamedEntity(Self.aposName, Self.aposCodepoints) { return fast }
+                    if let fast = fastNamedEntity(Self.aposName, Self.aposCodepoints, requiresSemicolon: true) { return fast }
                 case TokeniserStateVars.lowerLByte: // l
                     if let fast = fastNamedEntity(Self.ltName, Self.ltCodepoints) { return fast }
                 case TokeniserStateVars.lowerGByte: // g

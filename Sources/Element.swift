@@ -487,7 +487,15 @@ open class Element: Node {
     @discardableResult
     public func tagName(_ tagName: [UInt8]) throws -> Element {
         try Validate.notEmpty(string: tagName, msg: "Tag name must not be empty.")
+        let wasRawText = serializesAsRawText()
         _tag = try Tag.valueOf(tagName, ParseSettings.preserveCase) // preserve the requested tag case
+        if wasRawText != serializesAsRawText() {
+            // The same text needs different lexical escaping in its new context.
+            // Parent invalidation alone does not prevent clean child-source reuse.
+            for child in childNodes where child is TextNode {
+                child.markSourceDirty()
+            }
+        }
         markTagQueryIndexDirty()
         bumpTextMutationVersion()
         markSourceDirty()
@@ -724,10 +732,10 @@ open class Element: Node {
     
     @inline(__always)
     private static func accumulateParents(_ el: Element, _ parents: Elements) {
-        let parent: Element? = el.parent()
-        if (parent != nil && !(parent!.tagNameUTF8() == Element.rootString)) {
-            parents.add(parent!)
-            accumulateParents(parent!, parents)
+        var current = el.parent()
+        while let parent = current, parent.tagNameUTF8() != Element.rootString {
+            parents.add(parent)
+            current = parent.parent()
         }
     }
     
@@ -863,10 +871,14 @@ open class Element: Node {
      */
     @inline(__always)
     public func iS(_ evaluator: Evaluator)throws->Bool {
-        guard let od = self.ownerDocument() else {
-            return false
+        if let document = ownerDocument() {
+            return try evaluator.matches(document, self)
         }
-        return try evaluator.matches(od, self)
+        // Standalone elements, clones and removed subtrees still have a valid
+        // selector context. Use their topmost element for structural predicates.
+        var root: Element = self
+        while let parent = root.parent() { root = parent }
+        return try evaluator.matches(root, self)
     }
     
     /**
@@ -1111,7 +1123,10 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     open override func wrap(_ html: String) throws -> Element {
-        return try super.wrap(html) as! Element
+        // Node.wrap returns nil for non-element markup without changing the
+        // tree. Preserve that no-op while keeping Element's chainable return.
+        _ = try super.wrap(html)
+        return self
     }
     
     /**
@@ -1124,32 +1139,39 @@ open class Element: Node {
      - returns: the CSS Path that can be used to retrieve the element in a selector.
      */
     public func cssSelector() throws -> String {
-        let elementId = id()
-        if !elementId.isEmpty {
-            return "#" + Element.cssEscapeIdentifier(elementId)
+        var current: Element = self
+        var descendantSegments: [String] = []
+        descendantSegments.reserveCapacity(8)
+
+        while true {
+            let elementId = current.id()
+            if !elementId.isEmpty {
+                return "#" + Element.cssEscapeIdentifier(elementId) + descendantSegments.reversed().joined()
+            }
+
+            // Translate HTML namespace ns:tag to CSS namespace syntax ns|tag
+            let tagName = current.tagName().replacingOccurrences(of: ":", with: "|")
+            var selector = tagName
+            let classes = try current.classNames().map(Element.cssEscapeIdentifier).joined(separator: ".")
+            if !classes.isEmpty {
+                selector.append(".")
+                selector.append(classes)
+            }
+
+            // Preserve the recursive implementation's virtual parent() call
+            // sequence. Custom Element subclasses can observe these calls.
+            let existenceParent = current.parent()
+            if existenceParent == nil || ((current.parent() as? Document) != nil) {
+                return selector + descendantSegments.reversed().joined()
+            }
+
+            selector.insert(contentsOf: " > ", at: selector.startIndex)
+            if try current.parent()!.select(selector).array().count > 1 {
+                selector.append(":nth-child(\(try current.elementSiblingIndex() + 1))")
+            }
+            descendantSegments.append(selector)
+            current = current.parent()!
         }
-        
-        // Translate HTML namespace ns:tag to CSS namespace syntax ns|tag
-        let tagName: String = self.tagName().replacingOccurrences(of: ":", with: "|")
-        var selector: String = tagName
-        let cl = try classNames()
-        let classes: String = cl.map(Element.cssEscapeIdentifier).joined(separator: ".")
-        if !classes.isEmpty {
-            selector.append(".")
-            selector.append(classes)
-        }
-        
-        if (parent() == nil || ((parent() as? Document) != nil)) // don't add Document to selector, as will always have a html node
-        {
-            return selector
-        }
-        
-        selector.insert(contentsOf: " > ", at: selector.startIndex)
-        if (try parent()!.select(selector).array().count > 1) {
-            selector.append(":nth-child(\(try elementSiblingIndex() + 1))")
-        }
-        
-        return try parent()!.cssSelector() + (selector)
     }
 
     private static func cssEscapeIdentifier(_ identifier: String) -> String {
@@ -1915,41 +1937,46 @@ open class Element: Node {
     }
 
     @inline(__always)
-    private func collectTextFastTrimmed(_ accum: StringBuilder) -> (Bool, Bool) {
-        var stack: ContiguousArray<Node> = []
+    private func collectTextFastTrimmed(_ accum: StringBuilder) {
+        var stack: ContiguousArray<(Node, Bool)> = []
         stack.reserveCapacity(childNodes.count + 1)
-        stack.append(self)
+        stack.append((self, Element.preserveWhitespace(parent())))
         var lastWasWhite = false
-        var sawWhitespace = false
-        while let node = stack.popLast() {
+        while let (node, inheritedWhitespace) = stack.popLast() {
+            var preservesWhitespace = inheritedWhitespace
             if let textNode = node as? TextNode {
                 Element.appendNormalisedTextTracking(
                     accum,
                     textNode,
-                    lastWasWhite: &lastWasWhite,
-                    sawWhitespace: &sawWhitespace
+                    preserveWhitespace: preservesWhitespace,
+                    lastWasWhite: &lastWasWhite
                 )
                 continue
             }
             if let element = node as? Element {
+                let elementType = type(of: element)
+                if elementType == Element.self || elementType == Document.self || elementType == FormElement.self {
+                    preservesWhitespace = preservesWhitespace || element._tag.preserveWhitespace()
+                } else {
+                    // Custom parent views may differ from the traversal's structural parent.
+                    preservesWhitespace = Element.preserveWhitespace(element)
+                }
                 if !accum.isEmpty &&
                     (element.isBlock() || Tag.isBr(element._tag)) &&
                     !lastWasWhite {
                     accum.append(UTF8Arrays.whitespace)
                     lastWasWhite = true
-                    sawWhitespace = true
                 }
             }
             let children = node.childNodes
             if !children.isEmpty {
                 var i = children.count - 1
                 while i >= 0 {
-                    stack.append(children[i])
+                    stack.append((children[i], preservesWhitespace))
                     i -= 1
                 }
             }
         }
-        return (lastWasWhite, sawWhitespace)
     }
 
     @inline(__always)
@@ -2003,14 +2030,12 @@ open class Element: Node {
                 return text
             }
             let accum: StringBuilder = StringBuilder(max(64, childNodes.count * 8))
-            let (lastWasWhite, sawWhitespace) = collectTextFastTrimmed(accum)
-            if sawWhitespace, let first = accum.buffer.first, first.isWhitespace {
+            collectTextFastTrimmed(accum)
+            if let first = accum.buffer.first, first.isWhitespace {
                 let trimmed = accum.buffer.trim()
                 return String(decoding: trimmed, as: UTF8.self)
             }
-            if sawWhitespace, lastWasWhite {
-                accum.trimTrailingWhitespace()
-            }
+            accum.trimTrailingWhitespace()
             return String(decoding: accum.buffer, as: UTF8.self)
         }
         if childNodes.count == 1, let textNode = childNodes.first as? TextNode {
@@ -2027,13 +2052,11 @@ open class Element: Node {
         }
         let accum: StringBuilder = StringBuilder(max(64, childNodes.count * 8))
         if trimAndNormaliseWhitespace {
-            let (lastWasWhite, sawWhitespace) = collectTextFastTrimmed(accum)
-            if sawWhitespace, let first = accum.buffer.first, first.isWhitespace {
+            collectTextFastTrimmed(accum)
+            if let first = accum.buffer.first, first.isWhitespace {
                 return Array(accum.buffer.trim())
             }
-            if sawWhitespace, lastWasWhite {
-                accum.trimTrailingWhitespace()
-            }
+            accum.trimTrailingWhitespace()
             return Array(accum.buffer)
         }
         collectTextFastRaw(accum)
@@ -2046,13 +2069,11 @@ open class Element: Node {
         }
         let accum: StringBuilder = StringBuilder(max(64, childNodes.count * 8))
         if trimAndNormaliseWhitespace {
-            let (lastWasWhite, sawWhitespace) = collectTextFastTrimmed(accum)
-            if sawWhitespace, let first = accum.buffer.first, first.isWhitespace {
+            collectTextFastTrimmed(accum)
+            if let first = accum.buffer.first, first.isWhitespace {
                 return accum.buffer.trim()
             }
-            if sawWhitespace, lastWasWhite {
-                accum.trimTrailingWhitespace()
-            }
+            accum.trimTrailingWhitespace()
             return accum.buffer
         }
         collectTextFastRaw(accum)
@@ -2077,7 +2098,7 @@ open class Element: Node {
             return slice
         }
         for b in slice {
-            if StringUtil.isAsciiWhitespaceByte(b) ||
+            if b.isWhitespace ||
                 b == StringUtil.utf8NBSPLead ||
                 b == StringUtil.utf8NBSPTrail {
                 return nil
@@ -2168,32 +2189,32 @@ open class Element: Node {
     @inline(__always)
     private static func appendNormalisedTextTracking(_ accum: StringBuilder,
                                                      _ textNode: TextNode,
-                                                     lastWasWhite: inout Bool,
-                                                     sawWhitespace: inout Bool) {
+                                                     preserveWhitespace: Bool,
+                                                     lastWasWhite: inout Bool) {
         let text = textNode.wholeTextSlice()
-        if Element.preserveWhitespace(textNode.parentNode) {
+        if preserveWhitespace {
             accum.append(text)
             if let last = text.last {
                 lastWasWhite = (last == TokeniserStateVars.spaceByte)
             }
-            sawWhitespace = true
             return
         }
         StringUtil.appendNormalisedWhitespace(
             accum,
             string: text,
             stripLeading: accum.isEmpty || lastWasWhite,
-            lastWasWhite: &lastWasWhite,
-            sawWhitespace: &sawWhitespace
+            lastWasWhite: &lastWasWhite
         )
     }
 
     @inline(__always)
-    private static func lowerAscii(_ byte: UInt8) -> UInt8 {
-        if byte >= 65 && byte <= 90 {
-            return byte &+ 32
-        }
-        return byte
+    internal func containsNormalizedTextASCII(_ needleLower: [UInt8]) throws -> Bool {
+        return Element.containsTextASCII(needleLower, in: try textUTF8())
+    }
+
+    @inline(__always)
+    internal func containsOwnTextASCII(_ needleLower: [UInt8]) -> Bool {
+        return Element.containsTextASCII(needleLower, in: ownTextUTF8())
     }
 
     private struct AsciiKMPMatcher {
@@ -2223,7 +2244,7 @@ open class Element: Node {
 
         @inline(__always)
         mutating func feed(_ byte: UInt8) -> Bool {
-            let c = Element.lowerAscii(byte)
+            let c = Attributes.asciiLowercase(byte)
             while j > 0 && c != needle[j] {
                 j = lps[j - 1]
             }
@@ -2237,242 +2258,29 @@ open class Element: Node {
         }
     }
 
-    @inline(__always)
-    private static func emitNormalizedSlice(_ slice: ArraySlice<UInt8>,
-                                            stripLeading: Bool,
-                                            emittedAny: inout Bool,
-                                            lastWasWhite: inout Bool,
-                                            matcher: inout AsciiKMPMatcher) -> Bool {
-        var reachedNonWhite = false
-        var i = slice.startIndex
-        let end = slice.endIndex
-        while i < end {
-            let firstByte = slice[i]
-            if firstByte < TokeniserStateVars.asciiUpperLimitByte {
-                if StringUtil.isAsciiWhitespaceByte(firstByte) {
-                    if (stripLeading && !reachedNonWhite) || lastWasWhite {
-                        i = slice.index(after: i)
-                        continue
-                    }
-                    if matcher.feed(TokeniserStateVars.spaceByte) { return true }
-                    lastWasWhite = true
-                    emittedAny = true
-                    i = slice.index(after: i)
-                    continue
-                }
-                var j = i
-                while j < end {
-                    let b = slice[j]
-                    if b >= TokeniserStateVars.asciiUpperLimitByte || StringUtil.isAsciiWhitespaceByte(b) {
-                        break
-                    }
-                    if matcher.feed(b) { return true }
-                    j = slice.index(after: j)
-                }
-                if i != j {
-                    emittedAny = true
-                    lastWasWhite = false
-                    reachedNonWhite = true
-                    i = j
-                    continue
-                }
-                i = slice.index(after: i)
-                continue
+    private static func containsTextASCII(_ needleLower: [UInt8], in text: [UInt8]) -> Bool {
+        guard !needleLower.isEmpty else { return false }
+        // Reuse the public getters' normalization instead of maintaining a
+        // second streaming normalizer (preserveWhitespace and final trim matter).
+        // Byte matching is equivalent to String.contains only for ASCII text:
+        // Unicode lowercasing and grapheme boundaries can change the answer.
+        if StringUtil.isAscii(text) {
+            guard needleLower.count <= text.count else { return false }
+            // Keep the bounded short-needle loop cheap, but retain the old
+            // streaming matcher's linear worst case for long/repeated prefixes.
+            if needleLower.count <= 16 {
+                return StringUtil.containsLowercaseAscii(text, needleLower)
             }
-            if firstByte == StringUtil.utf8NBSPLead {
-                let next = slice.index(after: i)
-                if next < end, slice[next] == StringUtil.utf8NBSPTrail {
-                    if (stripLeading && !reachedNonWhite) || lastWasWhite {
-                        i = slice.index(after: next)
-                        continue
-                    }
-                    if matcher.feed(TokeniserStateVars.spaceByte) { return true }
-                    lastWasWhite = true
-                    emittedAny = true
-                    reachedNonWhite = true
-                    i = slice.index(after: next)
-                    continue
-                }
+            var matcher = AsciiKMPMatcher(needleLower)
+            for byte in text {
+                if matcher.feed(byte) { return true }
             }
-            let scalarByteCount: Int
-            if firstByte < StringUtil.utf8Lead3Min {
-                scalarByteCount = 2
-            } else if firstByte < StringUtil.utf8Lead4Min {
-                scalarByteCount = 3
-            } else {
-                scalarByteCount = 4
-            }
-            var next = i
-            for _ in 0..<scalarByteCount {
-                if next == end { return false }
-                let b = slice[next]
-                if matcher.feed(b) { return true }
-                next = slice.index(after: next)
-            }
-            emittedAny = true
-            lastWasWhite = false
-            reachedNonWhite = true
-            i = next
+            return false
         }
-        return false
+        return String(decoding: text, as: UTF8.self).lowercased()
+            .contains(String(decoding: needleLower, as: UTF8.self))
     }
 
-    @inline(__always)
-    private static func emitNormalizedSlice(_ slice: ByteSlice,
-                                            stripLeading: Bool,
-                                            emittedAny: inout Bool,
-                                            lastWasWhite: inout Bool,
-                                            matcher: inout AsciiKMPMatcher) -> Bool {
-        var reachedNonWhite = false
-        var i = 0
-        let end = slice.count
-        while i < end {
-            let firstByte = slice[i]
-            if firstByte < TokeniserStateVars.asciiUpperLimitByte {
-                if StringUtil.isAsciiWhitespaceByte(firstByte) {
-                    if (stripLeading && !reachedNonWhite) || lastWasWhite {
-                        i &+= 1
-                        continue
-                    }
-                    if matcher.feed(TokeniserStateVars.spaceByte) { return true }
-                    lastWasWhite = true
-                    emittedAny = true
-                    i &+= 1
-                    continue
-                }
-                var j = i
-                while j < end {
-                    let b = slice[j]
-                    if b >= TokeniserStateVars.asciiUpperLimitByte || StringUtil.isAsciiWhitespaceByte(b) {
-                        break
-                    }
-                    if matcher.feed(b) { return true }
-                    j &+= 1
-                }
-                if i != j {
-                    emittedAny = true
-                    lastWasWhite = false
-                    reachedNonWhite = true
-                    i = j
-                    continue
-                }
-                i &+= 1
-                continue
-            }
-            if firstByte == StringUtil.utf8NBSPLead {
-                let next = i &+ 1
-                if next < end, slice[next] == StringUtil.utf8NBSPTrail {
-                    if (stripLeading && !reachedNonWhite) || lastWasWhite {
-                        i = next &+ 1
-                        continue
-                    }
-                    if matcher.feed(TokeniserStateVars.spaceByte) { return true }
-                    lastWasWhite = true
-                    emittedAny = true
-                    reachedNonWhite = true
-                    i = next &+ 1
-                    continue
-                }
-            }
-            let scalarByteCount: Int
-            if firstByte < StringUtil.utf8Lead3Min {
-                scalarByteCount = 2
-            } else if firstByte < StringUtil.utf8Lead4Min {
-                scalarByteCount = 3
-            } else {
-                scalarByteCount = 4
-            }
-            var next = i
-            for _ in 0..<scalarByteCount {
-                if next == end { return false }
-                let b = slice[next]
-                if matcher.feed(b) { return true }
-                next &+= 1
-            }
-            emittedAny = true
-            lastWasWhite = false
-            reachedNonWhite = true
-            i = next
-        }
-        return false
-    }
-
-    @inline(__always)
-    internal func containsNormalizedTextASCII(_ needleLower: [UInt8]) -> Bool {
-        if needleLower.isEmpty {
-            return true
-        }
-        var matcher = AsciiKMPMatcher(needleLower)
-        var stack: ContiguousArray<Node> = []
-        stack.reserveCapacity(childNodes.count + 1)
-        stack.append(self)
-        var lastWasWhite = false
-        var emittedAny = false
-        while let node = stack.popLast() {
-            if let textNode = node as? TextNode {
-                let slice = textNode.wholeTextSlice()
-                let stripLeading = !emittedAny || lastWasWhite
-                if Element.emitNormalizedSlice(slice,
-                                               stripLeading: stripLeading,
-                                               emittedAny: &emittedAny,
-                                               lastWasWhite: &lastWasWhite,
-                                               matcher: &matcher) {
-                    return true
-                }
-                continue
-            }
-            if let element = node as? Element {
-                if emittedAny,
-                   (element.isBlock() || Tag.isBr(element._tag)),
-                   !lastWasWhite {
-                    if matcher.feed(TokeniserStateVars.spaceByte) { return true }
-                    emittedAny = true
-                    lastWasWhite = true
-                }
-            }
-            let children = node.childNodes
-            if !children.isEmpty {
-                var i = children.count - 1
-                while i >= 0 {
-                    stack.append(children[i])
-                    i -= 1
-                }
-            }
-        }
-        return false
-    }
-
-    @inline(__always)
-    internal func containsOwnTextASCII(_ needleLower: [UInt8]) -> Bool {
-        if needleLower.isEmpty {
-            return true
-        }
-        var matcher = AsciiKMPMatcher(needleLower)
-        var lastWasWhite = false
-        var emittedAny = false
-        let children = childNodes
-        for child in children {
-            if let textNode = child as? TextNode {
-                let slice = textNode.wholeTextSlice()
-                let stripLeading = !emittedAny || lastWasWhite
-                if Element.emitNormalizedSlice(slice,
-                                               stripLeading: stripLeading,
-                                               emittedAny: &emittedAny,
-                                               lastWasWhite: &lastWasWhite,
-                                               matcher: &matcher) {
-                    return true
-                }
-            } else if let element = child as? Element {
-                if emittedAny, Tag.isBr(element._tag), !lastWasWhite {
-                    if matcher.feed(TokeniserStateVars.spaceByte) { return true }
-                    emittedAny = true
-                    lastWasWhite = true
-                }
-            }
-        }
-        return false
-    }
-    
     private static func appendWhitespaceIfBr(_ element: Element, _ accum: StringBuilder) {
         if (Tag.isBr(element._tag) && !TextNode.lastCharIsWhitespace(accum)) {
             accum.append(UTF8Arrays.whitespace)
@@ -2480,9 +2288,12 @@ open class Element: Node {
     }
     
     static func preserveWhitespace(_ node: Node?) -> Bool {
-        // looks only at this element and one level up, to prevent recursion & needless stack searches
-        if let element = (node as? Element) {
-            return element._tag.preserveWhitespace() || element.parent() != nil && element.parent()!._tag.preserveWhitespace()
+        // Whitespace preservation is inherited through all intervening markup.
+        // Walk iteratively so deeply nested inline elements remain stack safe.
+        var current = node as? Element
+        while let element = current {
+            if element._tag.preserveWhitespace() { return true }
+            current = element.parent()
         }
         return false
     }
@@ -2506,14 +2317,21 @@ open class Element: Node {
      - returns: true if element has non-blank text content.
      */
     public func hasText() -> Bool {
-        for child: Node in childNodes {
-            if let textNode = (child as? TextNode) {
-                if (!textNode.isBlank()) {
+        // Preserve the recursive implementation's depth-first child order without
+        // consuming one call frame per element on deeply nested documents.
+        var pending: [Node] = []
+        pending.reserveCapacity(childNodes.count)
+        for child in childNodes.reversed() {
+            pending.append(child)
+        }
+        while let node = pending.popLast() {
+            if let textNode = node as? TextNode {
+                if !textNode.isBlank() {
                     return true
                 }
-            } else if let el = (child as? Element) {
-                if (el.hasText()) {
-                    return true
+            } else if let element = node as? Element {
+                for child in element.childNodes.reversed() {
+                    pending.append(child)
                 }
             }
         }
@@ -2821,7 +2639,7 @@ open class Element: Node {
      */
     @inline(__always)
     public func val() throws -> String {
-        if (tagName() == "textarea") {
+        if _tag.tagId == .textarea {
             return try text()
         } else {
             return try attr("value")
@@ -2836,7 +2654,7 @@ open class Element: Node {
     @discardableResult
     @inline(__always)
     public func val(_ value: String) throws -> Element {
-        if (tagName() == "textarea") {
+        if _tag.tagId == .textarea {
             try text(value)
         } else {
             try attr("value", value)
@@ -2844,6 +2662,21 @@ open class Element: Node {
         return self
     }
     
+    /// HTML raw-text parents cannot escape or pretty-print their child text:
+    /// character references and added whitespace would become literal content.
+    @inline(__always)
+    internal func serializesAsRawText() -> Bool {
+        guard elementNamespace == .html else { return false }
+        switch _tag.tagId {
+        case .script, .style, .iframe, .noembed, .noframes, .plaintext:
+            return true
+        case .none:
+            return _tag.getNameNormalUTF8() == UTF8Arrays.xmp
+        default:
+            return false
+        }
+    }
+
     @inline(__always)
     override func outerHtmlHead(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) throws {
         if (out.prettyPrint() && (_tag.formatAsBlock() || (parent() != nil && parent()!.tag().formatAsBlock()) || out.outline())) {
@@ -2871,7 +2704,7 @@ open class Element: Node {
     @inline(__always)
     override func outerHtmlTail(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) {
         if (!((elementNamespace == .html || out.syntax() == .xml) && childNodes.isEmpty && _tag.isSelfClosing())) {
-            if (out.prettyPrint() && (!childNodes.isEmpty && (
+            if (out.prettyPrint() && !(out.syntax() == .html && serializesAsRawText()) && (!childNodes.isEmpty && (
                 _tag.formatAsBlock() || (out.outline() && (childNodes.count > 1 || (childNodes.count == 1 && !(((childNodes[0] as? TextNode) != nil)))))
             ))) {
                 indent(accum, depth, out)
