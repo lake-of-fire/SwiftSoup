@@ -66,6 +66,13 @@ final class TemplateTreeBuilderTest: XCTestCase {
         XCTAssertEqual(try (nodes.first as? Element)?.text(), "cell")
     }
 
+    func testTemplateInHeadRestoresHeadModeBeforeCreatingBody() throws {
+        let doc = try parse("<template><p id='draft'>draft</template><title>Title</title><p id='live'>live")
+        XCTAssertEqual(try doc.select("head > template #draft").size(), 1)
+        XCTAssertEqual(try doc.select("head > title").text(), "Title")
+        XCTAssertEqual(try doc.getElementById("live")?.parent(), doc.body())
+    }
+
     func testUnclosedTemplatesStopAtEOFWithoutFormattingEscape() throws {
         let doc = try parse("<p>before<template><b>draft<template><p>nested")
         XCTAssertEqual(try doc.select("template template p").size(), 1)

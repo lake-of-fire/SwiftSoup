@@ -1092,7 +1092,7 @@ class HtmlTreeBuilder: TreeBuilder {
                 transition(HtmlTreeBuilderState.InTable)
                 break
             } else if ("head".equals(name)) {
-                transition(HtmlTreeBuilderState.InBody)
+                transition(last ? .InBody : .InHead)
                 break // frag
             } else if ("body".equals(name)) {
                 transition(HtmlTreeBuilderState.InBody)
