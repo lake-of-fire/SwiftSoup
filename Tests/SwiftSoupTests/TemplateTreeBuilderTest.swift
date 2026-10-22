@@ -79,6 +79,13 @@ final class TemplateTreeBuilderTest: XCTestCase {
         XCTAssertEqual(try doc.select("body > p > template").size(), 1)
     }
 
+    func testForeignIntegrationScopeDoesNotCloseOuterParagraph() throws {
+        let doc = try parse("<p id='outer'>before<svg><title><p id='inner'>inside</p></title></svg>after</p><p id='next'>next")
+        XCTAssertEqual(try doc.getElementById("outer")?.ownText(), "beforeafter")
+        XCTAssertEqual(try doc.select("#outer > svg > title > #inner").size(), 1)
+        XCTAssertEqual(try doc.getElementById("next")?.parent(), doc.body())
+    }
+
     func testForeignTemplateNamesRemainForeignAndTitlesIntegrateHTML() throws {
         for foreign in ["svg", "math"] {
             let doc = try parse("<\(foreign)><template id=foreign>visible</template></\(foreign)><p id=after>after")

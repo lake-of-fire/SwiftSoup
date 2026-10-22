@@ -64,6 +64,7 @@ class HtmlTreeBuilder: TreeBuilder {
 
     private var stackTrackingDirty: Bool = false
     private var stackUnknownTagIdCount: Int = 0
+    private var stackForeignElementCount: Int = 0
     private var stackTagIdP: [Int] = []
     private var stackTagIdButton: [Int] = []
 
@@ -694,6 +695,7 @@ class HtmlTreeBuilder: TreeBuilder {
     private func resetStackTracking() {
         stackTrackingDirty = false
         stackUnknownTagIdCount = 0
+        stackForeignElementCount = 0
         stackTagIdP.removeAll(keepingCapacity: true)
         stackTagIdButton.removeAll(keepingCapacity: true)
         if stack.isEmpty {
@@ -721,6 +723,7 @@ class HtmlTreeBuilder: TreeBuilder {
         if allowDirty && stackTrackingDirty {
             return
         }
+        if element.namespace() != .html { stackForeignElementCount &+= 1 }
         let tagId = element._tag.tagId
         if tagId == .none {
             stackUnknownTagIdCount &+= 1
@@ -738,6 +741,7 @@ class HtmlTreeBuilder: TreeBuilder {
         if stackTrackingDirty {
             return
         }
+        if element.namespace() != .html { stackForeignElementCount &-= 1 }
         let tagId = element._tag.tagId
         if tagId == .none {
             stackUnknownTagIdCount &-= 1
@@ -1258,10 +1262,10 @@ class HtmlTreeBuilder: TreeBuilder {
 
     @inline(__always)
     private func inButtonScopePFast() throws -> Bool {
-        if hasTemplateMode() || stack.contains(where: { $0.namespace() != .html }) {
+        rebuildStackTrackingIfNeeded()
+        if hasTemplateMode() || stackForeignElementCount > 0 {
             return try inScope(UTF8Arrays.p, TagSets.button)
         }
-        rebuildStackTrackingIfNeeded()
         if stackUnknownTagIdCount == 0 {
             guard let lastP = stackTagIdP.last else {
                 return false
