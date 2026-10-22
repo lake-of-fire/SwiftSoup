@@ -299,6 +299,16 @@ final class SelectorQueryStats {
 
 open class Element: Node {
     var _tag: Tag
+    /// HTML tree construction preserves namespace identity across integration points.
+    public enum Namespace: String, Sendable {
+        /// XML elements outside the three HTML tree-construction vocabularies.
+        case other = ""
+        case html = "http://www.w3.org/1999/xhtml"
+        case svg = "http://www.w3.org/2000/svg"
+        case mathml = "http://www.w3.org/1998/Math/MathML"
+    }
+    @usableFromInline internal var elementNamespace: Namespace = .html
+    public func namespace() -> Namespace { elementNamespace }
     
     @usableFromInline
     internal static let classString = "class".utf8Array
@@ -2847,7 +2857,7 @@ open class Element: Node {
         try attributes?.html(accum: accum, out: out)
         
         // selfclosing includes unknown tags, isEmpty defines tags that are always empty
-        if (childNodes.isEmpty && _tag.isSelfClosing()) {
+        if ((elementNamespace == .html || out.syntax() == .xml) && childNodes.isEmpty && _tag.isSelfClosing()) {
             if (out.syntax() == OutputSettings.Syntax.html && _tag.isEmpty()) {
                 accum.append(UTF8Arrays.selfClosingTagEnd) // <img /> for "always empty" tags. selfclosing is ignored but retained for xml/xhtml compatibility
             } else {
@@ -2860,7 +2870,7 @@ open class Element: Node {
     
     @inline(__always)
     override func outerHtmlTail(_ accum: StringBuilder, _ depth: Int, _ out: OutputSettings) {
-        if (!(childNodes.isEmpty && _tag.isSelfClosing())) {
+        if (!((elementNamespace == .html || out.syntax() == .xml) && childNodes.isEmpty && _tag.isSelfClosing())) {
             if (out.prettyPrint() && (!childNodes.isEmpty && (
                 _tag.formatAsBlock() || (out.outline() && (childNodes.count > 1 || (childNodes.count == 1 && !(((childNodes[0] as? TextNode) != nil)))))
             ))) {
@@ -2952,6 +2962,7 @@ open class Element: Node {
     @inline(__always)
     public override func copy(with zone: NSZone? = nil) -> Any {
         let clone = Element(_tag, baseUri!, skipChildReserve: true)
+        clone.elementNamespace = elementNamespace
         if let treeBuilder {
             clone.treeBuilder = treeBuilder
         }
@@ -2961,6 +2972,7 @@ open class Element: Node {
     @inline(__always)
     public override func copy(parent: Node?) -> Node {
         let clone = Element(_tag, baseUri!, skipChildReserve: true)
+        clone.elementNamespace = elementNamespace
         if let treeBuilder {
             clone.treeBuilder = treeBuilder
         }
@@ -2970,6 +2982,7 @@ open class Element: Node {
     @inline(__always)
     override func copyForDeepClone(parent: Node?) -> Node {
         let clone = Element(_tag, baseUri!, skipChildReserve: true)
+        clone.elementNamespace = elementNamespace
         if let treeBuilder {
             clone.treeBuilder = treeBuilder
         }
@@ -2984,6 +2997,7 @@ open class Element: Node {
     
     @inline(__always)
     public override func copy(clone: Node, parent: Node?) -> Node {
+        (clone as? Element)?.elementNamespace = elementNamespace
         return super.copy(clone: clone, parent: parent)
     }
     

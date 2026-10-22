@@ -19,10 +19,10 @@ class HtmlTreeBuilder: TreeBuilder {
     
     private enum TagSets {
         // tag searches
-        static let inScope = ParsingStrings(["applet", "caption", "html", "table", "td", "th", "marquee", "object"])
+        static let inScope = ParsingStrings(["applet", "caption", "html", "table", "td", "th", "marquee", "object", "template"])
         static let list = ParsingStrings(["ol", "ul"])
         static let button = ParsingStrings(["button"])
-        static let tableScope = ParsingStrings(["html", "table"])
+        static let tableScope = ParsingStrings(["html", "table", "template"])
         static let selectScope = ParsingStrings(["optgroup", "option"])
         static let endTags = ParsingStrings(["dd", "dt", "li", "option", "optgroup", "p", "rp", "rt"])
         static let titleTextarea = ParsingStrings(["title", "textarea"])
@@ -35,7 +35,7 @@ class HtmlTreeBuilder: TreeBuilder {
                                              "iframe", "img", "input", "isindex", "li", "link", "listing", "marquee", "menu", "meta", "nav",
                                              "noembed", "noframes", "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script",
                                              "section", "select", "style", "summary", "table", "tbody", "td", "textarea", "tfoot", "th", "thead",
-                                             "title", "tr", "ul", "wbr", "xmp"])
+                                             "title", "tr", "ul", "wbr", "xmp", "template"])
     }
     
     private enum StackContexts {
@@ -44,6 +44,7 @@ class HtmlTreeBuilder: TreeBuilder {
         static let tableRow = ParsingStrings(["tr"])
     }
     
+    var templateModes: [HtmlTreeBuilderState] = []
     private var _state: HtmlTreeBuilderState = HtmlTreeBuilderState.Initial // the current state
     private var _originalState: HtmlTreeBuilderState = HtmlTreeBuilderState.Initial // original / marked state
     
@@ -85,6 +86,36 @@ class HtmlTreeBuilder: TreeBuilder {
     override func initialiseParse(_ input: [UInt8], _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) {
         super.initialiseParse(input, baseUri, errors, settings)
         resetStackTracking()
+        resetTemplateState()
+    }
+
+    public override func initialiseParse(_ input: UnsafeBufferPointer<UInt8>, owner: AnyObject?, _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) {
+        super.initialiseParse(input, owner: owner, baseUri, errors, settings)
+        resetStackTracking()
+        resetTemplateState()
+    }
+
+    private func resetTemplateState() {
+        templateModes.removeAll(keepingCapacity: true)
+        formattingElements.removeAll(keepingCapacity: true)
+        pendingTableCharacters.removeAll(keepingCapacity: true)
+        headElement = nil
+        formElement = nil
+        contextElement = nil
+        fragmentParsing = false
+        fosterInserts = false
+        _framesetOk = true
+        _state = .Initial
+        baseUriSetFromDoc = false
+    }
+
+    func adjustedCurrentElement() -> Element? {
+        if fragmentParsing, stack.count == 1 { return contextElement }
+        return currentElement()
+    }
+
+    override func prepareTokeniserForRead() {
+        tokeniser.allowsCdata = (adjustedCurrentElement()?.namespace() ?? .html) != .html
     }
 
     func parseFragment(_ inputFragment: [UInt8], _ context: Element?, _ baseUri: [UInt8], _ errors: ParseErrorList, _ settings: ParseSettings) throws -> Array<Node> {
@@ -101,7 +132,9 @@ class HtmlTreeBuilder: TreeBuilder {
             }
             
             // initialise the tokeniser state:
-            if TagSets.titleTextarea.contains(context.tagNameUTF8()) || TagSets.frames.contains(context.tagNameUTF8()) {
+            if context.namespace() != .html {
+                tokeniser.transition(TokeniserState.Data)
+            } else if TagSets.titleTextarea.contains(context.tagNameUTF8()) || TagSets.frames.contains(context.tagNameUTF8()) {
                 tokeniser.transition(TokeniserState.Rcdata)
             } else {
                 switch context.tagNameUTF8() {
@@ -116,6 +149,9 @@ class HtmlTreeBuilder: TreeBuilder {
                 }
             }
             
+            if context.tagNameNormal() == "template", context.namespace() == .html {
+                templateModes.append(.InTemplate)
+            }
             root = try Element(Tag.valueOf(UTF8Arrays.html, settings), baseUri)
             root?.treeBuilder = self
             try Validate.notNull(obj: root)
@@ -148,6 +184,9 @@ class HtmlTreeBuilder: TreeBuilder {
     
     @discardableResult
     public override func process(_ token: Token)throws->Bool {
+        if shouldProcessForeign(token) {
+            return try HtmlTreeBuilderState.ForeignContent.process(token, self)
+        }
         if !tracksErrors, !tracksSourceRanges, _state == .InBody {
             switch token.type {
             case .Char:
@@ -429,7 +468,7 @@ class HtmlTreeBuilder: TreeBuilder {
         let current = currentElement()
         let currentTag = current?._tag
         let currentTagId = currentTag?.tagId ?? .none
-        let isScriptOrStyle = currentTagId == .script || currentTagId == .style
+        let isScriptOrStyle = current?.namespace() == .html && (currentTagId == .script || currentTagId == .style)
         let fosterInserts = isFosterInserts()
         if isBulkBuilding,
            !tracksSourceRanges,
@@ -590,7 +629,7 @@ class HtmlTreeBuilder: TreeBuilder {
         }
         
         // connect form controls to their form element
-        if let n = (node as? Element), n.tag().isFormListed() {
+        if let n = (node as? Element), n.tag().isFormListed(), !hasTemplateMode() {
             formElement?.addElement(n)
         }
     }
@@ -910,7 +949,7 @@ class HtmlTreeBuilder: TreeBuilder {
                 i &-= 1
                 let next = stack[i]
                 let tagId = next._tag.tagId
-                if tagId == .html || (tagId != .none && nodeNames.containsTagId(tagId)) {
+                if tagId == .html || next.tagNameNormal() == "template" || (tagId != .none && nodeNames.containsTagId(tagId)) {
                     return i
                 }
                 let nextName = next.nodeNameUTF8()
@@ -941,7 +980,7 @@ class HtmlTreeBuilder: TreeBuilder {
             while i > 0 {
                 i &-= 1
                 let nextName = stack[i].nodeNameUTF8()
-                if nodeNames.contains(nextName) || nextName == UTF8Arrays.html {
+                if nodeNames.contains(nextName) || nextName == UTF8Arrays.html || nextName == "template".utf8Array {
                     return i
                 }
             }
@@ -1024,10 +1063,13 @@ class HtmlTreeBuilder: TreeBuilder {
             if (pos == 0) {
                 last = true
                 //Validate node
-                node = contextElement!
+                node = contextElement ?? node
             }
             let name: String = String(decoding: node.nodeNameUTF8(), as: UTF8.self)
-            if ("select".equals(name)) {
+            if name == "template", node.namespace() == .html {
+                transition(templateModes.last ?? .InTemplate)
+                break
+            } else if ("select".equals(name)) {
                 transition(HtmlTreeBuilderState.InSelect)
                 break // frag
             } else if (("td".equals(name) || "th".equals(name) && !last)) {
@@ -1073,6 +1115,10 @@ class HtmlTreeBuilder: TreeBuilder {
         while i > 0 {
             i &-= 1
             let el = stack[i]
+            if el.namespace() != .html {
+                if isForeignScopeBoundary(el) { return false }
+                continue
+            }
             let tagId = el._tag.tagId
             if tagId != .none {
                 if let targetTagId, tagId == targetTagId {
@@ -1108,7 +1154,12 @@ class HtmlTreeBuilder: TreeBuilder {
         var i = stack.count
         while i > 0 {
             i &-= 1
-            let elName = stack[i].nodeNameUTF8()
+            let el = stack[i]
+            if el.namespace() != .html {
+                if isForeignScopeBoundary(el) { return false }
+                continue
+            }
+            let elName = el.nodeNameUTF8()
             if targetNames.contains(elName) {
                 return true
             }
@@ -1128,6 +1179,10 @@ class HtmlTreeBuilder: TreeBuilder {
         while i > 0 {
             i &-= 1
             let el = stack[i]
+            if el.namespace() != .html {
+                if isForeignScopeBoundary(el) { return false }
+                continue
+            }
             let tagId = el._tag.tagId
             if tagId != .none {
                 if targetNames.containsTagId(tagId) {
@@ -1203,6 +1258,9 @@ class HtmlTreeBuilder: TreeBuilder {
 
     @inline(__always)
     private func inButtonScopePFast() throws -> Bool {
+        if hasTemplateMode() || stack.contains(where: { $0.namespace() != .html }) {
+            return try inScope(UTF8Arrays.p, TagSets.button)
+        }
         rebuildStackTrackingIfNeeded()
         if stackUnknownTagIdCount == 0 {
             guard let lastP = stackTagIdP.last else {
@@ -1317,7 +1375,7 @@ class HtmlTreeBuilder: TreeBuilder {
         //    StringUtil.inString(currentElement()!.nodeName(), HtmlTreeBuilder.TagSearchEndTags)) {
         //        pop()
         // }
-        guard let excludeTag = excludeTag else { return }
+        let excludeTag = excludeTag ?? []
         let excludeTagId = Token.Tag.tagIdForBytes(excludeTag)
         markStructuralChange(currentElement())
         while true {
@@ -1340,8 +1398,7 @@ class HtmlTreeBuilder: TreeBuilder {
 
     
     func isSpecial(_ el: Element) -> Bool {
-        // todo: mathml's mi, mo, mn
-        // todo: svg's foreigObject, desc, title
+        if el.namespace() != .html { return isForeignScopeBoundary(el) }
         let tagId = el._tag.tagId
         if tagId != .none {
             return TagSets.special.containsTagId(tagId)
@@ -1384,12 +1441,12 @@ class HtmlTreeBuilder: TreeBuilder {
         let bAttrs = b.getAttributes()
         if aAttrs == nil || bAttrs == nil {
             return aAttrs == nil && bAttrs == nil && a.nodeNameUTF8() == b.nodeNameUTF8()
+                && a.namespace() == b.namespace()
         }
         
         return a.nodeNameUTF8() == b.nodeNameUTF8() &&
-        // a.namespace().equals(b.namespace()) &&
+        a.namespace() == b.namespace() &&
         aAttrs!.equals(o: bAttrs!)
-        // todo: namespaces
     }
     
     func reconstructFormattingElements() throws {
@@ -1477,6 +1534,12 @@ class HtmlTreeBuilder: TreeBuilder {
     }
     
     func insertInFosterParent(_ input: Node) throws {
+        // Fostered nodes belong to a newer template rather than the live table.
+        if let templateIndex = stack.lastIndex(where: { $0.namespace() == .html && $0.tagNameNormal() == "template" }),
+           templateIndex > (stack.lastIndex(where: { $0.namespace() == .html && $0.tagNameNormal() == "table" }) ?? -1) {
+            try stack[templateIndex].appendChild(input)
+            return
+        }
         let fosterParent: Element?
         let lastTable: Element? = getFromStack(UTF8Arrays.table)
         var isLastTableParent: Bool = false

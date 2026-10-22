@@ -93,6 +93,14 @@ public class XmlTreeBuilder: TreeBuilder {
         } else {
             el = Element(tag, baseUri, skipChildReserve: skipChildReserve)
         }
+        // XHTML EPUBs use XML tree construction: vocabulary comes from xmlns,
+        // not HTML's tag-name-driven SVG/MathML switching rules.
+        let name = el.tagName()
+        let prefix = name.firstIndex(of: ":").map { String(name[..<$0]) }
+        let namespaceKey = prefix.map { "xmlns:" + $0 } ?? "xmlns"
+        let namespaceOwner = ([el] + stack.reversed()).first { $0.hasAttr(namespaceKey) }
+        let namespaceURI = try namespaceOwner?.attr(namespaceKey) ?? ""
+        el.elementNamespace = Element.Namespace(rawValue: namespaceURI) ?? .other
         el.treeBuilder = self
         if let range = startTag.sourceRange {
             if startTag.isSelfClosing() {
