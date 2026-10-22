@@ -8,6 +8,7 @@
 import Foundation
 
 final class Tokeniser {
+    var allowsCdata = true
     static let replacementChar: UnicodeScalar = "\u{FFFD}" // replaces null character
     // Inline "&" handling in Data/RCDATA state to avoid state transitions for character references.
     private static let notCharRefChars = ParsingStrings([UnicodeScalar.BackslashT, "\n", "\r", UnicodeScalar.BackslashF, " ", "<", UnicodeScalar.Ampersand])

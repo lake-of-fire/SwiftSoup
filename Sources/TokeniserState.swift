@@ -1137,10 +1137,7 @@ enum TokeniserState: TokeniserStateProtocol {
                 t.transition(.CommentStart)
             } else if (r.matchConsumeIgnoreCase(TokeniserStateVars.doctypeUTF8)) {
                 t.transition(.Doctype)
-            } else if (r.matchConsume(TokeniserStateVars.cdataStartUTF8)) {
-                // todo: should actually check current namepspace, and only non-html allows cdata. until namespace
-                // is implemented properly, keep handling as cdata
-                //} else if (!t.currentNodeInHtmlNS() && r.matchConsume("[CDATA[")) {
+            } else if (t.allowsCdata && r.matchConsume(TokeniserStateVars.cdataStartUTF8)) {
                 t.transition(.CdataSection)
             } else {
                 t.error(self)

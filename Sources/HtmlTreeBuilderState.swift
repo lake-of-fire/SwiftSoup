@@ -29,6 +29,7 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
     case InCell
     case InSelect
     case InSelectInTable
+    case InTemplate
     case AfterBody
     case InFrameset
     case AfterFrameset
@@ -43,7 +44,7 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
         static let outer3 = ParsingStrings(["body", "html"])
         static let baseEtc = ParsingStrings(["base", "basefont", "bgsound", "command", "link"])
         static let baseEtc2 = ParsingStrings(["basefont", "bgsound", "link", "meta", "noframes", "style"])
-        static let baseEtc3 = ParsingStrings(["base", "basefont", "bgsound", "link", "meta", "noframes", "script", "style", "title"])
+        static let baseEtc3 = ParsingStrings(["base", "basefont", "bgsound", "link", "meta", "noframes", "script", "style", "template", "title"])
         static let headNoscript = ParsingStrings(["head", "noscript"])
         static let table = ParsingStrings(["table", "tbody", "tfoot", "thead", "tr"])
         static let tableSections = ParsingStrings(["tbody", "tfoot", "thead"])
@@ -160,7 +161,48 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
     }
 
     func process(_ t: Token, _ tb: HtmlTreeBuilder) throws -> Bool {
+        // Text and pending table characters must finish their tokenizer/flush
+        // work before a template boundary can change the insertion mode.
+        let acceptsTemplate = [.InHead, .InBody, .InTable, .InColumnGroup,
+            .InCaption, .InTableBody, .InRow, .InCell, .InSelect,
+            .InSelectInTable, .InTemplate].contains(self)
+        if acceptsTemplate {
+            if t.startTagNormalNameEquals("template".utf8Array) {
+                try tb.beginTemplate(t.asStartTag())
+                return true
+            }
+            if t.isEndTag(), t.asEndTag().normalNameEquals("template".utf8Array) {
+                return try tb.endTemplate()
+            }
+            if t.isEOF(), tb.hasTemplateMode() { return try tb.processTemplate(t) }
+        }
+        if self == .InBody, tb.hasTemplateMode(), t.isStartTag() {
+            let start = t.asStartTag()
+            if start.normalNameEquals(UTF8Arrays.html) || start.normalNameEquals(UTF8Arrays.body)
+                || start.normalNameEquals(UTF8Arrays.frameset) { return false }
+            if start.normalNameEquals(UTF8Arrays.form) {
+                if try tb.inButtonScope(UTF8Arrays.p) { try tb.processEndTag(UTF8Arrays.p) }
+                try tb.insert(start)
+                return true
+            }
+        }
+        if self == .InBody, tb.hasTemplateMode(), t.isEndTag(), t.asEndTag().normalNameEquals(UTF8Arrays.form) {
+            guard try tb.inScope(UTF8Arrays.form) else { return false }
+            tb.generateImpliedEndTags()
+            tb.popStackToClose(UTF8Arrays.form)
+            return true
+        }
+        if self == .InTable, tb.hasTemplateMode(), t.startTagNormalNameEquals(UTF8Arrays.form) { return false }
+        if self == .InBody, t.isStartTag(),
+           t.startTagNormalNameEquals(UTF8Arrays.svg) || t.startTagNormalNameEquals(UTF8Arrays.math) {
+            try tb.reconstructFormattingElements()
+            _ = try tb.insertForeign(t.asStartTag(), namespace: t.startTagNormalNameEquals(UTF8Arrays.svg) ? .svg : .mathml)
+            tb.framesetOk(false)
+            return true
+        }
         switch self {
+        case .InTemplate:
+            return try tb.processTemplate(t)
         case .Initial:
             if (HtmlTreeBuilderState.isWhitespace(t)) {
                 return true // ignore whitespace
@@ -2544,8 +2586,7 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
                 }
                 return true
         case .ForeignContent:
-            return true
-            // todo: implement. Also how do we get here?
+            return try tb.processForeign(t)
         }
 
     }
@@ -2641,7 +2682,7 @@ enum HtmlTreeBuilderState: String, HtmlTreeBuilderStateProtocol {
     // lists of tags to search through. A little harder to read here, but causes less GC than dynamic varargs.
     // was contributing around 10% of parse GC load.
     fileprivate final class Constants {
-        fileprivate static let InBodyStartToHead = ParsingStrings(["base", "basefont", "bgsound", "command", "link", "meta", "noframes", "script", "style", "title"])
+        fileprivate static let InBodyStartToHead = ParsingStrings(["base", "basefont", "bgsound", "command", "link", "meta", "noframes", "script", "style", "template", "title"])
         fileprivate static let InBodyStartPClosers = ParsingStrings(["address", "article", "aside", "blockquote", "center", "details", "dir", "div", "dl",
                                                                 "fieldset", "figcaption", "figure", "footer", "header", "hgroup", "menu", "nav", "ol",
                                                                 "p", "section", "summary", "ul"])

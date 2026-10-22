@@ -369,20 +369,24 @@ class HtmlParserTest: XCTestCase {
 	}
 
 	func testHandlesCdata() throws {
-		// todo: as this is html namespace, should actually treat as bogus comment, not cdata. keep as cdata for now
-		let h = "<div id=1><![CDATA[<html>\n<foo><&amp;]]></div>" // the &amp; in there should remain literal
+		// In HTML, the bogus comment ends at the first >, so the following
+		// <foo> is live markup and its character reference is decoded normally.
+		let h = "<div id=1><![CDATA[<html>\n<foo><&amp;]]></div>"
 		let doc: Document = try SwiftSoup.parse(h)
 		let div: Element = try doc.getElementById("1")!
-		XCTAssertEqual("<html> <foo><&amp;", try div.text())
-		XCTAssertEqual(0, div.children().size())
-		XCTAssertEqual(1, div.childNodeSize()) // no elements, one text node
+		XCTAssertEqual("<&]]>", try div.text())
+		XCTAssertEqual(1, div.children().size())
+		XCTAssertEqual(3, div.childNodeSize()) // comment, newline, live foo
+		XCTAssertEqual("[CDATA[<html", (div.getChildNodes().first as? Comment)?.getData())
+		XCTAssertEqual("foo", div.child(0).tagName())
 	}
 
 	func testHandlesUnclosedCdataAtEOF() throws {
 		// https://github.com/jhy/jsoup/issues/349 would crash, as character reader would try to seek past EOF
 		let h = "<![CDATA[]]"
 		let doc = try SwiftSoup.parse(h)
-		XCTAssertEqual(1, doc.body()!.childNodeSize())
+		XCTAssertEqual(0, doc.body()!.childNodeSize())
+		XCTAssertEqual("[CDATA[]]", (doc.getChildNodes().first as? Comment)?.getData())
 	}
 
 	func testHandlesInvalidStartTags() throws {

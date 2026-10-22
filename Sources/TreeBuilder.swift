@@ -149,8 +149,11 @@ public class TreeBuilder {
         }
     }
     
+    func prepareTokeniserForRead() {}
+
     public func runParser() throws {
         while (true) {
+            prepareTokeniserForRead()
             let token: Token = try tokeniser.read()
             try process(token)
             if (token.type == Token.TokenType.EOF) {
