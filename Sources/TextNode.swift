@@ -68,6 +68,14 @@ open class TextNode: Node {
         return "#text"
     }
 
+    /// The original HTML spelling of an unchanged parsed text node, including
+    /// entity references. Returns nil for programmatically created or edited text.
+    public func originalHTML() -> String? {
+        guard !sourceRangeDirty, sourceRangeIsComplete,
+              let source = sourceSliceUTF8() else { return nil }
+        return String(decoding: source, as: UTF8.self)
+    }
+
     /**
      Get the text content of this text node.
      - returns: Unencoded, normalised text.
