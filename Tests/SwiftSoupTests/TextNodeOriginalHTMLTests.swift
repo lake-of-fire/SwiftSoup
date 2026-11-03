@@ -63,4 +63,13 @@ final class TextNodeOriginalHTMLTests: XCTestCase {
         }
     }
 
+    func testXMLDecodedTextAndOriginalSpellingRemainIndependent() throws {
+        let source = "猫&#128;&amp;"
+        let document = try SwiftSoup.parse("<?xml version='1.0'?><root>" + source + "</root>")
+        let root = try XCTUnwrap(document.select("root").first())
+        let text = try XCTUnwrap(root.getChildNodes().first as? TextNode)
+        XCTAssertEqual(text.getWholeText(), "猫\u{80}&")
+        XCTAssertEqual(text.originalHTML(), source)
+    }
+
 }
