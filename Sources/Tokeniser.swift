@@ -449,16 +449,8 @@ final class Tokeniser {
         let byte = reader.input[reader.pos]
         switch byte {
         case TokeniserStateVars.ampersandByte: // "&"
-            let start = reader.pos
-            let previousRange = pendingCharRange
-            let hadCharacters = !charsBuilder.isEmpty || charsSlice != nil || !pendingSlices.isEmpty
             reader.advanceAscii()
-            try TokeniserState.readCharRef(self, .Data)
-            // Decoded bytes differ from their spelling, but still map to the
-            // exact input interval consumed by this character reference.
-            pendingCharRange = appendedSourceRange(
-                start: start, end: reader.pos, previous: previousRange, hadCharacters: hadCharacters
-            )
+            try readCharacterReference(.Data)
             return
         case TokeniserStateVars.lessThanByte: // "<"
             markTagStart(reader.pos)
@@ -614,6 +606,23 @@ final class Tokeniser {
         if !hadCharacters { return SourceRange(start: start, end: end) }
         guard let previous, previous.end == start else { return nil }
         return SourceRange(start: previous.start, end: end)
+    }
+
+    /// The caller has consumed `&`. Data and RCDATA references share the same
+    /// source mapping even when decoding buffers multiple scalars or slices.
+    @inline(__always)
+    func readCharacterReference(_ advance: TokeniserState) throws {
+        guard trackSourceRanges else {
+            try TokeniserState.readCharRef(self, advance)
+            return
+        }
+        let start = reader.pos - 1
+        let previousRange = pendingCharRange
+        let hadCharacters = !charsBuilder.isEmpty || charsSlice != nil || !pendingSlices.isEmpty
+        try TokeniserState.readCharRef(self, advance)
+        pendingCharRange = appendedSourceRange(
+            start: start, end: reader.pos, previous: previousRange, hadCharacters: hadCharacters
+        )
     }
 
     @inline(__always)

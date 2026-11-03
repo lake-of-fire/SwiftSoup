@@ -72,4 +72,39 @@ final class TextNodeOriginalHTMLTests: XCTestCase {
         XCTAssertEqual(text.originalHTML(), source)
     }
 
+    func testRCDATATextRetainsCharacterReferenceSpelling() throws {
+        for tag in ["textarea", "title"] {
+            for source in ["前&amp;｜猫《ねこ》後", "｜猫《ね&#12371;》&amp;後",
+                           "&#xff5c;猫《ねこ》", "A& B", "&unknown;猫", "&NotEqualTilde;猫"] {
+                let document = try SwiftSoup.parse("<\(tag)>" + source + "</\(tag)>")
+                let element = try XCTUnwrap(document.select(tag).first())
+                let text = try XCTUnwrap(element.getChildNodes().first as? TextNode)
+                XCTAssertEqual(text.getWholeText(), try Parser.unescapeEntities(source, false), source)
+                XCTAssertEqual(text.originalHTML(), source, "\(tag): \(source)")
+                text.text("更新")
+                XCTAssertNil(text.originalHTML())
+            }
+        }
+    }
+
+    func testCDATAStaysLiteralWhenSerializingAnEditedParent() throws {
+        let expected = "<b>&amp;猫"
+        for xml in [false, true] {
+            let tag = xml ? "root" : "svg"
+            let source = "<\(tag)><![CDATA[\(expected)]]></\(tag)>"
+            let document = try (xml ? SwiftSoup.parseXML(source) : SwiftSoup.parse(source))
+            document.outputSettings().prettyPrint(pretty: false)
+            let parent = try XCTUnwrap(document.select(tag).first())
+            let text = try XCTUnwrap(parent.getChildNodes().first as? TextNode)
+            XCTAssertEqual(text.getWholeText(), expected)
+            XCTAssertNil(text.originalHTML(), "A CDATA body alone is not reusable escaped markup")
+            try parent.attr("id", "edited")
+            let serialized = try parent.outerHtml()
+            let reparsed = try (xml ? SwiftSoup.parseXML(serialized) : SwiftSoup.parse(serialized))
+            let restored = try XCTUnwrap(reparsed.select(tag).first())
+            XCTAssertEqual(try restored.text(trimAndNormaliseWhitespace: false), expected)
+            XCTAssertEqual(try restored.select("b").count, 0)
+        }
+    }
+
 }
