@@ -41,4 +41,26 @@ final class TextNodeOriginalHTMLTests: XCTestCase {
         XCTAssertNil(text.originalHTML(), "Edited data cannot introduce authored markup")
     }
 
+    func testEntityRangesStayIndependentAcrossMarkup() throws {
+        let document = try SwiftSoup.parse("<p>前&amp;<b>内</b>&#xff5c;後</p>")
+        let paragraph = try XCTUnwrap(document.select("p").first())
+        let texts = paragraph.getChildNodes().compactMap { $0 as? TextNode }
+        XCTAssertEqual(texts.map { $0.getWholeText() }, ["前&", "｜後"])
+        XCTAssertEqual(texts.map { $0.originalHTML() }, ["前&amp;", "&#xff5c;後"])
+    }
+
+    func testSourceRangesOnlyCoverMappedInput() throws {
+        for (source, decoded, original) in [
+            ("A&amp;B", "A&B", Optional("A&amp;B")),
+            ("A&#0;B", "A\u{FFFD}B", Optional("A&#0;B")),
+            ("A\0B", "A\0B", nil),
+        ] {
+            let document = try SwiftSoup.parse("<p>" + source + "</p>")
+            let paragraph = try XCTUnwrap(document.select("p").first())
+            let text = try XCTUnwrap(paragraph.getChildNodes().first as? TextNode)
+            XCTAssertEqual(text.getWholeText(), decoded)
+            XCTAssertEqual(text.originalHTML(), original)
+        }
+    }
+
 }
