@@ -72,4 +72,19 @@ final class TextNodeOriginalHTMLTests: XCTestCase {
         XCTAssertEqual(text.originalHTML(), source)
     }
 
+    func testRCDATATextRetainsCharacterReferenceSpelling() throws {
+        for tag in ["textarea", "title"] {
+            for source in ["前&amp;｜猫《ねこ》後", "｜猫《ね&#12371;》&amp;後",
+                           "&#xff5c;猫《ねこ》", "A& B", "&unknown;猫", "&NotEqualTilde;猫"] {
+                let document = try SwiftSoup.parse("<\(tag)>" + source + "</\(tag)>")
+                let element = try XCTUnwrap(document.select(tag).first())
+                let text = try XCTUnwrap(element.getChildNodes().first as? TextNode)
+                XCTAssertEqual(text.getWholeText(), try Parser.unescapeEntities(source, false), source)
+                XCTAssertEqual(text.originalHTML(), source, "\(tag): \(source)")
+                text.text("更新")
+                XCTAssertNil(text.originalHTML())
+            }
+        }
+    }
+
 }
