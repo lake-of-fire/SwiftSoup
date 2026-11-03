@@ -68,8 +68,9 @@ open class TextNode: Node {
         return "#text"
     }
 
-    /// The original HTML spelling of an unchanged parsed text node, including
-    /// entity references. Returns nil for programmatically created or edited text.
+    /// The original HTML spelling when the parser retained a reusable source
+    /// range, including entity references. Returns nil for programmatic or edited
+    /// text, and for ranges marked unreusable (such as fragment construction).
     public func originalHTML() -> String? {
         guard !sourceRangeDirty, sourceRangeIsComplete,
               let source = sourceSliceUTF8() else { return nil }
