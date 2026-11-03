@@ -87,4 +87,24 @@ final class TextNodeOriginalHTMLTests: XCTestCase {
         }
     }
 
+    func testCDATAStaysLiteralWhenSerializingAnEditedParent() throws {
+        let expected = "<b>&amp;猫"
+        for xml in [false, true] {
+            let tag = xml ? "root" : "svg"
+            let source = "<\(tag)><![CDATA[\(expected)]]></\(tag)>"
+            let document = try (xml ? SwiftSoup.parseXML(source) : SwiftSoup.parse(source))
+            document.outputSettings().prettyPrint(pretty: false)
+            let parent = try XCTUnwrap(document.select(tag).first())
+            let text = try XCTUnwrap(parent.getChildNodes().first as? TextNode)
+            XCTAssertEqual(text.getWholeText(), expected)
+            XCTAssertNil(text.originalHTML(), "A CDATA body alone is not reusable escaped markup")
+            try parent.attr("id", "edited")
+            let serialized = try parent.outerHtml()
+            let reparsed = try (xml ? SwiftSoup.parseXML(serialized) : SwiftSoup.parse(serialized))
+            let restored = try XCTUnwrap(reparsed.select(tag).first())
+            XCTAssertEqual(try restored.text(trimAndNormaliseWhitespace: false), expected)
+            XCTAssertEqual(try restored.select("b").count, 0)
+        }
+    }
+
 }

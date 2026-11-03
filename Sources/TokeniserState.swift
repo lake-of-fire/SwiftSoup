@@ -292,7 +292,7 @@ enum TokeniserState: TokeniserStateProtocol {
             }
             break
         case .CharacterReferenceInData:
-            try TokeniserState.readCharRef(t, .Data)
+            try t.readCharacterReference(.Data)
             break
         case .Rcdata:
             if r.isEmpty() {
@@ -303,7 +303,7 @@ enum TokeniserState: TokeniserStateProtocol {
             switch byte {
             case TokeniserStateVars.ampersandByte: // "&"
                 r.advanceAscii()
-                try TokeniserState.readCharRef(t, .Rcdata)
+                try t.readCharacterReference(.Rcdata)
                 break
             case TokeniserStateVars.lessThanByte: // "<"
                 t.markTagStart(r.pos)
@@ -326,7 +326,7 @@ enum TokeniserState: TokeniserStateProtocol {
             }
             break
         case .CharacterReferenceInRcdata:
-            try TokeniserState.readCharRef(t, .Rcdata)
+            try t.readCharacterReference(.Rcdata)
             break
         case .Rawtext:
             try TokeniserState.readData(t, r, self, .RawtextLessthanSign)
@@ -2226,9 +2226,10 @@ enum TokeniserState: TokeniserStateProtocol {
             }
             break
         case .CdataSection:
-            let dataStart = r.pos
             let data = r.consumeToSlice(TokeniserStateVars.cdataEndUTF8)
-            t.emitRaw(data, start: dataStart, end: r.pos)
+            // Without its CDATA delimiters this is literal data, not reusable
+            // escaped markup. Serializing an edited parent must escape it.
+            t.emitRaw(data)
             r.matchConsume(TokeniserStateVars.cdataEndUTF8)
             t.transition(.Data)
             break
