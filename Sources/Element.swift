@@ -2856,6 +2856,9 @@ open class Element: Node {
     /// character references and added whitespace would become literal content.
     @inline(__always)
     internal func serializesAsRawText() -> Bool {
+        // Known SVG/MathML nodes retain foreign escaping. Unknown XML
+        // vocabularies emitted as HTML acquire HTML semantics on reparse.
+        guard elementNamespace != .svg && elementNamespace != .mathml else { return false }
         switch _tag.tagId {
         case .script, .style, .iframe, .noembed, .noframes, .plaintext:
             return true
