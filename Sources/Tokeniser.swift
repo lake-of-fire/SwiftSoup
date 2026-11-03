@@ -287,7 +287,7 @@ final class Tokeniser {
             charsSliceFromInput = false
             pendingSlices.removeAll(keepingCapacity: true)
             pendingSlicesCount = 0
-            charPending.sourceRange = nil
+            charPending.sourceRange = pendingCharRange
             pendingCharRange = nil
             return charPending.data(str)
         } else if let slice = charsSlice {
@@ -301,7 +301,7 @@ final class Tokeniser {
                 let slice = pendingSlices[0]
                 pendingSlices.removeAll(keepingCapacity: true)
                 pendingSlicesCount = 0
-                charPending.sourceRange = nil
+                charPending.sourceRange = pendingCharRange
                 pendingCharRange = nil
                 return charPending.data(slice)
             } else {
@@ -324,7 +324,7 @@ final class Tokeniser {
                     }
                     pendingSlices.removeAll(keepingCapacity: true)
                     pendingSlicesCount = 0
-                    charPending.sourceRange = nil
+                    charPending.sourceRange = pendingCharRange
                     pendingCharRange = nil
                     return charPending.data(combined)
                 } else {
@@ -335,7 +335,7 @@ final class Tokeniser {
                     }
                     pendingSlices.removeAll(keepingCapacity: true)
                     pendingSlicesCount = 0
-                    charPending.sourceRange = nil
+                    charPending.sourceRange = pendingCharRange
                     pendingCharRange = nil
                     return charPending.data(combined)
                 }
@@ -428,8 +428,16 @@ final class Tokeniser {
         let byte = reader.input[reader.pos]
         switch byte {
         case TokeniserStateVars.ampersandByte: // "&"
+            let start = reader.pos
+            let previousRange = pendingCharRange
+            let hadCharacters = !charsBuilder.isEmpty || charsSlice != nil || !pendingSlices.isEmpty
             reader.advanceAscii()
             try TokeniserState.readCharRef(self, .Data)
+            // Decoded bytes differ from their spelling, but still map to the
+            // exact input interval consumed by this character reference.
+            pendingCharRange = appendedSourceRange(
+                start: start, end: reader.pos, previous: previousRange, hadCharacters: hadCharacters
+            )
             return
         case TokeniserStateVars.lessThanByte: // "<"
             markTagStart(reader.pos)
@@ -610,18 +618,26 @@ final class Tokeniser {
         }
     }
 
+    /// Only contiguous mapped input may supply original text spelling.
+    /// An unmapped/synthetic emission poisons the range until the token flushes.
+    @inline(__always)
+    private func appendedSourceRange(
+        start: Int, end: Int, previous: SourceRange?, hadCharacters: Bool
+    ) -> SourceRange? {
+        guard trackSourceRanges, start >= 0, end >= start, end <= reader.end else { return nil }
+        if !hadCharacters { return SourceRange(start: start, end: end) }
+        guard let previous, previous.end == start else { return nil }
+        return SourceRange(start: previous.start, end: end)
+    }
+
     @inline(__always)
     func emitRaw(_ str: ByteSlice, start: Int, end: Int) {
-        if trackSourceRanges {
-            if charsBuilder.isEmpty && charsSlice == nil && pendingSlices.isEmpty {
-                pendingCharRange = SourceRange(start: start, end: end)
-            } else {
-                pendingCharRange = nil
-            }
-        } else {
-            pendingCharRange = nil
-        }
+        let range = appendedSourceRange(
+            start: start, end: end, previous: pendingCharRange,
+            hadCharacters: !charsBuilder.isEmpty || charsSlice != nil || !pendingSlices.isEmpty
+        )
         emitInputSlice(str)
+        pendingCharRange = range
     }
 
     @inline(__always)
@@ -741,6 +757,7 @@ final class Tokeniser {
 
     @inline(__always)
     func emitByte(_ byte: UInt8) {
+        pendingCharRange = nil
         ensureCharsBuilderForAppend()
         charsBuilder.append(byte)
     }
