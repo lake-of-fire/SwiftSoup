@@ -108,4 +108,17 @@ final class NumericReferenceNormalizationTest: XCTestCase {
         XCTAssertEqual(scalars(try parser.parseInput(input, "").select("p").text()), [0x20AC])
     }
 
+    func testExplicitDecodePolicyMatchesTheOriginatingParser() throws {
+        let source = "&#128;&#0;&amp;"
+        for inAttribute in [false, true] {
+            for normalizes in [false, true] {
+                let expected = normalizes ? "€\u{FFFD}&" : "\u{80}\0&"
+                XCTAssertEqual(try Parser.unescapeEntities(source, inAttribute,
+                    normalizesHtmlNumericReferences: normalizes), expected)
+                XCTAssertEqual(try Parser.unescapeEntities(Array(source.utf8), inAttribute,
+                    normalizesHtmlNumericReferences: normalizes), Array(expected.utf8))
+            }
+        }
+    }
+
 }
