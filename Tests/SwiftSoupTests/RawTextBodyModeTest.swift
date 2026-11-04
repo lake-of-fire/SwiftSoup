@@ -88,4 +88,22 @@ final class RawTextBodyModeTest: XCTestCase {
             XCTAssertTrue(element.children().isEmpty)
         }
     }
+
+    func testForeignRawNamedElementsKeepTheirEscapingContext() throws {
+        let expected = "<b>&amp;日本"
+        for vocabulary in ["svg", "math"] {
+            let document = try SwiftSoup.parse("<\(vocabulary)><iframe id='foreign'></iframe></\(vocabulary)>")
+            let target = try XCTUnwrap(document.getElementById("foreign"))
+            try target.text(expected)
+            for pretty in [false, true] {
+                document.outputSettings().prettyPrint(pretty: pretty)
+                for output in [try document.outerHtmlUTF8(), try document.outerHtmlUTF8WithoutSourceReuse()] {
+                    let restored = try XCTUnwrap(SwiftSoup.parse(String(decoding: output, as: UTF8.self)).getElementById("foreign"))
+                    XCTAssertEqual(wholeText(restored), expected, vocabulary)
+                    XCTAssertTrue(restored.children().isEmpty, vocabulary)
+                    XCTAssertEqual(restored.namespace(), target.namespace())
+                }
+            }
+        }
+    }
 }

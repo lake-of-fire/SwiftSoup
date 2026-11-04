@@ -117,4 +117,18 @@ final class RawTextFragmentContextTest: XCTestCase {
             XCTAssertTrue(element.childNode(0) is TextNode)
         }
     }
+
+    func testPlaintextFragmentMutationsKeepTagsAndEntitiesLiteral() throws {
+        for mutate in [
+            { (element: Element) throws in try element.append(self.literalSource) },
+            { (element: Element) throws in try element.prepend(self.literalSource) },
+            { (element: Element) throws in try element.html(self.literalSource) }
+        ] {
+            let document = try SwiftSoup.parse("<plaintext id='target'>")
+            let element = try XCTUnwrap(document.getElementById("target"))
+            try mutate(element)
+            XCTAssertEqual(contents(of: element), literalSource)
+            XCTAssertTrue(element.children().isEmpty)
+        }
+    }
 }
