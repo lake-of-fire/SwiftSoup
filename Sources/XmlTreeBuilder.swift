@@ -140,11 +140,10 @@ public class XmlTreeBuilder: TreeBuilder {
     @inline(__always)
     func insert(_ characterToken: Token.Char)throws {
         let node: Node = {
-            if let range = characterToken.sourceRange,
-               let source = doc.sourceBuffer?.bytes,
-               range.isValid,
-               range.end <= source.count {
-                return TextNode(slice: source[range.start..<range.end], baseUri: baseUri)
+            // Source ranges describe spelling, not decoded character data.
+            // Keep decoded entity values while retaining the range separately.
+            if let slice = characterToken.getDataSlice() {
+                return TextNode(slice: slice, baseUri: baseUri)
             }
             return TextNode(characterToken.getData()!, baseUri)
         }()

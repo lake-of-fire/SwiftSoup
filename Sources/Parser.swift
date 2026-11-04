@@ -245,6 +245,23 @@ public class Parser {
         return try String(decoding: unescapeEntities(string.utf8Array, inAttribute), as: UTF8.self)
     }
 
+    /// Decode using the same numeric-reference policy as the source parser.
+    /// HTML remaps null/C1 values; XML retains their literal scalar values.
+    public static func unescapeEntities(
+        _ string: [UInt8], _ inAttribute: Bool, normalizesHtmlNumericReferences: Bool
+    ) throws -> [UInt8] {
+        let tokeniser = Tokeniser(CharacterReader(string), ParseErrorList.noTracking(), nil,
+                                  normalizesHtmlNumericReferences: normalizesHtmlNumericReferences)
+        return try tokeniser.unescapeEntities(inAttribute)
+    }
+
+    public static func unescapeEntities(
+        _ string: String, _ inAttribute: Bool, normalizesHtmlNumericReferences: Bool
+    ) throws -> String {
+        String(decoding: try unescapeEntities(string.utf8Array, inAttribute,
+            normalizesHtmlNumericReferences: normalizesHtmlNumericReferences), as: UTF8.self)
+    }
+
 	/**
 	 - parameter bodyHtml: HTML to parse
 	 - parameter baseUri: baseUri base URI of document (i.e. original fetch location), for resolving relative URLs.
